@@ -26,49 +26,52 @@ def root():
 async def enhance(file: UploadFile = File(...)):
     try:
         raw = await file.read()
+        original = Image.open(io.BytesIO(raw)).convert("RGB")
 
-        original_pil = Image.open(io.BytesIO(raw)).convert("RGB")
-        original_np = np.array(original_pil)
+        # downscale (helps size + speed)
+        MAX_SIZE = 2048
+        if max(original.size) > MAX_SIZE:
+            original.thumbnail((MAX_SIZE, MAX_SIZE), Image.LANCZOS)
 
-        # deterministic step
-        enhanced_np, orig_np, lock_fn = enhance_image(original_pil)
-        enhanced_pil = Image.fromarray(enhanced_np.astype(np.uint8))
+        # deterministic step (pillow-only)
+        processed_np = enhance_image(original)  # returns numpy RGB array
+        processed = Image.fromarray(processed_np.astype(np.uint8), mode="RGB")
 
-        # save temp for AI
+        # save for OpenAI edit
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         tmp_path = tmp.name
         tmp.close()
-        enhanced_pil.save(tmp_path)
+        processed.save(tmp_path)
 
         prompt = """
-Enhance this photo for a car listing.
-Preserve all geometry, logos, wheels, headlights.
-No repainting. No replacement.
-Only color/light balance.
+Enhance this photo for a car sales listing.
+
+STRICT RULES:
+- Do NOT change car model, trim, headlights, wheels, or any logos/badges
+- Do NOT add/remove objects or text
+- Do NOT change background layout
+- Keep reflections natural
+
+Only:
+- neutralize color cast
+- mild contrast
+- mild highlight recovery
+- subtle sharpening
+
+Photorealistic. No stylization.
 """
 
-        # AI polish
         result = client.images.edit(
-            model="gpt-image-1",
+            model="gpt-image-1.5",
             image=open(tmp_path, "rb"),
             prompt=prompt,
-            size="1024x1024"
+            size="1536x1024"
         )
 
         out_b64 = result.data[0].b64_json
-        ai_img = base64.b64decode(out_b64)
+        out_bytes = base64.b64decode(out_b64)
 
-        ai_np = np.array(Image.open(io.BytesIO(ai_img)).convert("RGB"))
-
-        # HARD LOCK: restore protected regions
-        final = lock_fn(orig_np, ai_np)
-
-        final_pil = Image.fromarray(final.astype(np.uint8))
-
-        buf = io.BytesIO()
-        final_pil.save(buf, format="PNG")
-
-        return Response(buf.getvalue(), media_type="image/png")
+        return Response(content=out_bytes, media_type="image/png")
 
     except Exception as e:
         return JSONResponse(
