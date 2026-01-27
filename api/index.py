@@ -6,7 +6,7 @@ import traceback
 
 import numpy as np
 from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import Response, JSONResponse
 from PIL import Image
 from openai import OpenAI
 
@@ -24,18 +24,16 @@ def root():
 
 @app.get("/health")
 def health():
-    has_key = bool(os.getenv("OPENAI_API_KEY"))
-    return {"status": "ok", "openai_key_present": has_key}
+    return {"status": "ok", "openai_key_present": bool(os.getenv("OPENAI_API_KEY"))}
 
 
 @app.post("/enhance")
 async def enhance(file: UploadFile = File(...)):
     try:
         raw = await file.read()
-
         image = Image.open(io.BytesIO(raw)).convert("RGB")
 
-        processed = enhance_image(image)  # numpy RGB
+        processed = enhance_image(image)
         pil_img = Image.fromarray(processed.astype(np.uint8), mode="RGB")
 
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
@@ -72,13 +70,11 @@ Photorealistic.
         img_base64 = result.data[0].b64_json
         final_bytes = base64.b64decode(img_base64)
 
-        return JSONResponse({"image_base64": base64.b64encode(final_bytes).decode()})
+        # ✅ return actual PNG bytes
+        return Response(content=final_bytes, media_type="image/png")
 
     except Exception as e:
         return JSONResponse(
             status_code=500,
-            content={
-                "error": str(e),
-                "trace": traceback.format_exc()
-            }
+            content={"error": str(e), "trace": traceback.format_exc()},
         )
