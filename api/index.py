@@ -27,6 +27,9 @@ async def enhance(file: UploadFile = File(...)):
     try:
         raw = await file.read()
         original = Image.open(io.BytesIO(raw)).convert("RGB")
+        MAX_SIZE = 2048
+if max(original.size) > MAX_SIZE:
+    original.thumbnail((MAX_SIZE, MAX_SIZE), Image.LANCZOS)
 
         processed_np = enhance_image(original)
         processed = Image.fromarray(processed_np.astype(np.uint8), mode="RGB")
