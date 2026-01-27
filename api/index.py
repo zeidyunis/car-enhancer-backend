@@ -64,7 +64,7 @@ Photorealistic.
             model="chatgpt-image-latest",
             image=open(tmp_path, "rb"),
             prompt=prompt,
-            size="1024x1024"
+            size="1536x1024"
         )
 
         img_base64 = result.data[0].b64_json
