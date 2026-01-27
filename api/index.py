@@ -28,11 +28,10 @@ async def enhance(file: UploadFile = File(...)):
         raw = await file.read()
         original = Image.open(io.BytesIO(raw)).convert("RGB")
 
-        # deterministic step
         processed_np = enhance_image(original)
         processed = Image.fromarray(processed_np.astype(np.uint8), mode="RGB")
 
-        # save BOTH images for edit conditioning
+        # save BOTH images
         orig_tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         orig_path = orig_tmp.name
         orig_tmp.close()
@@ -46,27 +45,32 @@ async def enhance(file: UploadFile = File(...)):
         prompt = """
 Edit the FIRST image using the SECOND image only as a reference for color/lighting.
 
-ABSOLUTE RULES (must follow):
-- Preserve the exact car identity: same model, trim, badges, wheels, grille, headlights
-- Preserve exact geometry: body lines, proportions, wheel shape, window shape, panel gaps
+ABSOLUTE RULES (MUST FOLLOW):
+- Preserve the exact car identity: same model/trim/badges
+- Preserve exact geometry: body lines, proportions, windows, panel gaps
+- DO NOT modify wheels AT ALL:
+  - Do not change rim design
+  - Do not change tire sidewall text
+  - Do not change center caps
+  - Do not change wheel logos/brand marks
+  - Wheel logos must remain EXACTLY the same (no redraw, no blur, no replacement)
 - Do NOT add/remove objects, text, logos, plates, people
-- Do NOT change background layout or reflections structure
-- No repainting, no new rims, no tint change
+- Do NOT change background layout
+- If any rule conflicts with enhancement, prioritize NOT changing anything.
 
-Allowed edits ONLY:
-- Neutralize color cast (make whites neutral)
+Allowed edits ONLY (global, subtle):
+- Neutralize color cast
 - Slightly deepen blacks
-- Recover highlights if possible
-- Mild contrast improvement
-- Very subtle clarity/sharpening (no HDR look)
+- Slight highlight recovery
+- Mild contrast
+- Very subtle clarity/sharpening (no HDR)
 
-Output must look like the SAME photo, just cleaner and more balanced.
+Output must look like the SAME photo, only cleaner.
 Photorealistic. No stylization.
 """
 
-        # IMPORTANT: pass both images (primary + reference)
         result = client.images.edit(
-            model="chatgpt-image-latest",
+            model="gpt-image-1.5",
             image=[open(orig_path, "rb"), open(proc_path, "rb")],
             prompt=prompt,
             size="1536x1024"
