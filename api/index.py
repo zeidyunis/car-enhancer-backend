@@ -147,7 +147,7 @@ No creative interpretation.
 Failure to follow any rule is incorrect.
 """
         result = client.images.edit(
-            model="chatgpt-image-latest",
+            model="gpt-image-1.5",
             image=open(tmp_path, "rb"),
             prompt=prompt,
             size="1536x1024"
