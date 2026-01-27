@@ -63,7 +63,7 @@ Photorealistic.
 """
 
         result = client.images.edit(
-            model="gpt-image-latest",
+            model="chatgpt-image-latest",
             image=open(tmp_path, "rb"),
             prompt=prompt,
             size="1024x1024"
