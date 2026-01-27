@@ -4,7 +4,6 @@ import base64
 import tempfile
 
 import numpy as np
-import cv2
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image
@@ -14,7 +13,6 @@ from utils.opencv_pipeline import enhance_image
 
 
 app = FastAPI()
-
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
@@ -25,22 +23,18 @@ def root():
 
 @app.post("/enhance")
 async def enhance(file: UploadFile = File(...)):
-
-    # ---------- Read Upload ----------
     raw = await file.read()
 
     image = Image.open(io.BytesIO(raw)).convert("RGB")
 
-    # ---------- OpenCV Pipeline ----------
-    processed = enhance_image(image)
+    # deterministic lightweight step
+    processed = enhance_image(image)  # returns numpy RGB array
+    pil_img = Image.fromarray(processed.astype(np.uint8), mode="RGB")
 
-    pil_img = Image.fromarray(processed)
-
-    # ---------- Save Temp ----------
+    # save temp for OpenAI edit
     tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
     pil_img.save(tmp.name)
 
-    # ---------- OpenAI Polish ----------
     prompt = """
 Enhance this photo for a car sales listing.
 
@@ -68,7 +62,6 @@ Photorealistic.
     )
 
     img_base64 = result.data[0].b64_json
-
     final_bytes = base64.b64decode(img_base64)
 
     return JSONResponse({
