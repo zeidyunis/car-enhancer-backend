@@ -44,23 +44,21 @@ async def enhance(file: UploadFile = File(...)):
         processed.save(tmp_path)
 
         prompt = """
-Enhance this photo for a car sales listing.
+Make ONLY global photo corrections. Do NOT make any local edits.
 
-STRICT RULES:
-- Do NOT change car model, trim, headlights, wheels, or any logos/badges
-- Do NOT add/remove objects or text
-- Do NOT change background layout
-- Keep reflections natural
+ABSOLUTE LOCKS:
+- Do not change any text, letters, numbers, icons, logos, UI elements, button symbols, stitching patterns, or screen contents.
+- Do not warp or redraw dashboard controls, climate controls, infotainment UI, or instrument cluster.
+- Do not alter interior material colors (leather/trim) beyond neutral white balance.
 
-Only:
-- neutralize color cast
-- mild contrast
-- mild highlight recovery
-- subtle sharpening
-
-Photorealistic. No stylization.
+Allowed ONLY (global):
+- neutral white balance / remove color cast
+- very mild exposure adjustment
+- very mild contrast
+- very mild highlight recovery
+- very mild noise reduction
+NO local enhancements. NO repainting. Photorealistic.
 """
-
         result = client.images.edit(
             model="gpt-image-1.5",
             image=open(tmp_path, "rb"),
