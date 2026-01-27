@@ -2,6 +2,7 @@ import io
 import os
 import base64
 import tempfile
+import traceback
 
 import numpy as np
 from fastapi import FastAPI, File, UploadFile
@@ -29,17 +30,20 @@ def health():
 
 @app.post("/enhance")
 async def enhance(file: UploadFile = File(...)):
-    raw = await file.read()
+    try:
+        raw = await file.read()
 
-    image = Image.open(io.BytesIO(raw)).convert("RGB")
+        image = Image.open(io.BytesIO(raw)).convert("RGB")
 
-    processed = enhance_image(image)  # numpy RGB array
-    pil_img = Image.fromarray(processed.astype(np.uint8), mode="RGB")
+        processed = enhance_image(image)  # numpy RGB
+        pil_img = Image.fromarray(processed.astype(np.uint8), mode="RGB")
 
-    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-    pil_img.save(tmp.name)
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+        pil_img.save(tmp_path)
 
-    prompt = """
+        prompt = """
 Enhance this photo for a car sales listing.
 
 Rules:
@@ -58,14 +62,23 @@ Only:
 Photorealistic.
 """
 
-    result = client.images.edit(
-        model="gpt-image-latest",
-        image=open(tmp.name, "rb"),
-        prompt=prompt,
-        size="1024x1024"
-    )
+        result = client.images.edit(
+            model="gpt-image-latest",
+            image=open(tmp_path, "rb"),
+            prompt=prompt,
+            size="1024x1024"
+        )
 
-    img_base64 = result.data[0].b64_json
-    final_bytes = base64.b64decode(img_base64)
+        img_base64 = result.data[0].b64_json
+        final_bytes = base64.b64decode(img_base64)
 
-    return JSONResponse({"image_base64": base64.b64encode(final_bytes).decode()})
+        return JSONResponse({"image_base64": base64.b64encode(final_bytes).decode()})
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e),
+                "trace": traceback.format_exc()
+            }
+        )
