@@ -26,60 +26,49 @@ def root():
 async def enhance(file: UploadFile = File(...)):
     try:
         raw = await file.read()
-        original = Image.open(io.BytesIO(raw)).convert("RGB")
 
-        processed_np = enhance_image(original)
-        processed = Image.fromarray(processed_np.astype(np.uint8), mode="RGB")
+        original_pil = Image.open(io.BytesIO(raw)).convert("RGB")
+        original_np = np.array(original_pil)
 
-        # save BOTH images
-        orig_tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        orig_path = orig_tmp.name
-        orig_tmp.close()
-        original.save(orig_path)
+        # deterministic step
+        enhanced_np, orig_np, lock_fn = enhance_image(original_pil)
+        enhanced_pil = Image.fromarray(enhanced_np.astype(np.uint8))
 
-        proc_tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        proc_path = proc_tmp.name
-        proc_tmp.close()
-        processed.save(proc_path)
+        # save temp for AI
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+        enhanced_pil.save(tmp_path)
 
         prompt = """
-Edit the FIRST image using the SECOND image only as a reference for color/lighting.
-
-ABSOLUTE RULES (MUST FOLLOW):
-- Preserve the exact car identity: same model/trim/badges
-- Preserve exact geometry: body lines, proportions, windows, panel gaps
-- DO NOT modify wheels AT ALL:
-  - Do not change rim design
-  - Do not change tire sidewall text
-  - Do not change center caps
-  - Do not change wheel logos/brand marks
-  - Wheel logos must remain EXACTLY the same (no redraw, no blur, no replacement)
-- Do NOT add/remove objects, text, logos, plates, people
-- Do NOT change background layout
-- If any rule conflicts with enhancement, prioritize NOT changing anything.
-
-Allowed edits ONLY (global, subtle):
-- Neutralize color cast
-- Slightly deepen blacks
-- Slight highlight recovery
-- Mild contrast
-- Very subtle clarity/sharpening (no HDR)
-
-Output must look like the SAME photo, only cleaner.
-Photorealistic. No stylization.
+Enhance this photo for a car listing.
+Preserve all geometry, logos, wheels, headlights.
+No repainting. No replacement.
+Only color/light balance.
 """
 
+        # AI polish
         result = client.images.edit(
-            model="gpt-image-1.5",
-            image=[open(orig_path, "rb"), open(proc_path, "rb")],
+            model="gpt-image-1",
+            image=open(tmp_path, "rb"),
             prompt=prompt,
-            size="1536x1024"
+            size="1024x1024"
         )
 
         out_b64 = result.data[0].b64_json
-        out_bytes = base64.b64decode(out_b64)
+        ai_img = base64.b64decode(out_b64)
 
-        return Response(content=out_bytes, media_type="image/png")
+        ai_np = np.array(Image.open(io.BytesIO(ai_img)).convert("RGB"))
+
+        # HARD LOCK: restore protected regions
+        final = lock_fn(orig_np, ai_np)
+
+        final_pil = Image.fromarray(final.astype(np.uint8))
+
+        buf = io.BytesIO()
+        final_pil.save(buf, format="PNG")
+
+        return Response(buf.getvalue(), media_type="image/png")
 
     except Exception as e:
         return JSONResponse(
