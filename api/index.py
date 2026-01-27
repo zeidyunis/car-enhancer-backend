@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from PIL import Image
 from openai import OpenAI
 
-from utils.opencv_pipeline import enhance_image
+from api.utils.opencv_pipeline import enhance_image
 
 
 app = FastAPI()
@@ -25,13 +25,13 @@ def root():
 async def enhance(file: UploadFile = File(...)):
     raw = await file.read()
 
+    # NOTE: HEIC/HEIF will fail unless you add pillow-heif later.
+    # For now we keep MVP stable with common formats (jpg/png/webp).
     image = Image.open(io.BytesIO(raw)).convert("RGB")
 
-    # deterministic lightweight step
-    processed = enhance_image(image)  # returns numpy RGB array
+    processed = enhance_image(image)  # numpy RGB array
     pil_img = Image.fromarray(processed.astype(np.uint8), mode="RGB")
 
-    # save temp for OpenAI edit
     tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
     pil_img.save(tmp.name)
 
@@ -64,6 +64,4 @@ Photorealistic.
     img_base64 = result.data[0].b64_json
     final_bytes = base64.b64decode(img_base64)
 
-    return JSONResponse({
-        "image_base64": base64.b64encode(final_bytes).decode()
-    })
+    return JSONResponse({"image_base64": base64.b64encode(final_bytes).decode()})
