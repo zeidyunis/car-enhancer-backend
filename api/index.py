@@ -44,20 +44,107 @@ async def enhance(file: UploadFile = File(...)):
         processed.save(tmp_path)
 
         prompt = """
-Make ONLY global photo corrections. Do NOT make any local edits.
+You are performing a STRICT photo enhancement, not a redesign.
 
-ABSOLUTE LOCKS:
-- Do not change any text, letters, numbers, icons, logos, UI elements, button symbols, stitching patterns, or screen contents.
-- Do not warp or redraw dashboard controls, climate controls, infotainment UI, or instrument cluster.
-- Do not alter interior material colors (leather/trim) beyond neutral white balance.
+Your task is to apply ONLY global photographic corrections.
+You are NOT allowed to change any physical, visual, or material details.
 
-Allowed ONLY (global):
-- neutral white balance / remove color cast
-- very mild exposure adjustment
-- very mild contrast
-- very mild highlight recovery
-- very mild noise reduction
-NO local enhancements. NO repainting. Photorealistic.
+=====================
+ABSOLUTE IMMUTABLE RULES (MUST FOLLOW)
+=====================
+
+IDENTITY & GEOMETRY
+- Preserve the exact car identity: model, trim, generation, body shape.
+- Preserve exact proportions, panel gaps, body lines, window shapes.
+- Do NOT warp, stretch, reshape, or redraw any part.
+
+WHEELS & LOGOS
+- Do NOT modify wheels in any way.
+- Do NOT change rim design, finish, color, or texture.
+- Do NOT change tire sidewall text.
+- Do NOT blur, redraw, replace, sharpen, or reinterpret center caps.
+- Wheel logos and brand marks must remain EXACTLY the same pixels.
+
+BADGES & BRANDING
+- Do NOT change, redraw, blur, sharpen, replace, or reinterpret any badges.
+- Do NOT modify brand logos anywhere on the car or interior.
+
+LIGHTS
+- Do NOT change headlights, taillights, indicators, DRLs, or reflectors.
+- Do NOT alter lens texture, LED patterns, or housing shape.
+
+MATERIALS & TRIM
+- Do NOT add chrome, gloss, metallic, or reflective trim.
+- Do NOT convert blacked-out parts into chrome or bright materials.
+- Do NOT change matte ↔ gloss finishes.
+- Do NOT change carbon fiber, piano black, wood, or aluminum textures.
+- Do NOT recolor interior or exterior materials.
+
+INTERIOR UI / TEXT / ICONS
+- Do NOT change any text, letters, numbers, symbols, icons, or fonts.
+- Do NOT alter dashboard controls, buttons, climate controls, steering buttons.
+- Do NOT change infotainment screens, instrument cluster, HUD, or displays.
+- Do NOT blur, redraw, or stylize any UI elements.
+
+BACKGROUND & ENVIRONMENT
+- Do NOT add, remove, or modify objects.
+- Do NOT change background layout, walls, reflections, scenery, or shadows.
+- Do NOT add people, cars, signs, or props.
+
+REFLECTIONS
+- Preserve original reflections structure.
+- Do NOT invent new reflections or highlights.
+
+=====================
+ALLOWED OPERATIONS (GLOBAL ONLY)
+=====================
+
+You may apply ONLY subtle, global, uniform adjustments:
+
+- Neutralize color cast / correct white balance
+- Slight exposure correction
+- Slight contrast improvement
+- Very mild highlight recovery
+- Very mild shadow lift
+- Very subtle sharpening
+- Very light noise reduction
+
+These adjustments must affect the ENTIRE image evenly.
+No local edits. No region-specific edits.
+
+=====================
+STRICT PROHIBITIONS
+=====================
+
+- No repainting
+- No retouching of specific parts
+- No enhancement of individual components
+- No stylization
+- No HDR look
+- No cinematic grading
+- No “AI look”
+- No reinterpretation
+- No reconstruction
+- No artistic effects
+
+If any enhancement risks changing physical details,
+you must choose to leave the image unchanged.
+
+=====================
+OUTPUT REQUIREMENT
+=====================
+
+The output must look like the SAME PHOTO,
+taken with better lighting and camera settings,
+not a different version of the car.
+
+Photorealistic.
+Neutral.
+Conservative.
+Technically accurate.
+No creative interpretation.
+
+Failure to follow any rule is incorrect.
 """
         result = client.images.edit(
             model="gpt-image-1.5",
