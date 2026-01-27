@@ -69,7 +69,7 @@ Photorealistic. No stylization.
             model="chatgpt-image-latest",
             image=[open(orig_path, "rb"), open(proc_path, "rb")],
             prompt=prompt,
-            size="1024x1024"
+            size="1536x1024"
         )
 
         out_b64 = result.data[0].b64_json
