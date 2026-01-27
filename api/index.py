@@ -22,56 +22,60 @@ def root():
     return {"status": "ok"}
 
 
-@app.get("/health")
-def health():
-    return {"status": "ok", "openai_key_present": bool(os.getenv("OPENAI_API_KEY"))}
-
-
 @app.post("/enhance")
 async def enhance(file: UploadFile = File(...)):
     try:
         raw = await file.read()
-        image = Image.open(io.BytesIO(raw)).convert("RGB")
+        original = Image.open(io.BytesIO(raw)).convert("RGB")
 
-        processed = enhance_image(image)
-        pil_img = Image.fromarray(processed.astype(np.uint8), mode="RGB")
+        # deterministic step
+        processed_np = enhance_image(original)
+        processed = Image.fromarray(processed_np.astype(np.uint8), mode="RGB")
 
-        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        tmp_path = tmp.name
-        tmp.close()
-        pil_img.save(tmp_path)
+        # save BOTH images for edit conditioning
+        orig_tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        orig_path = orig_tmp.name
+        orig_tmp.close()
+        original.save(orig_path)
+
+        proc_tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        proc_path = proc_tmp.name
+        proc_tmp.close()
+        processed.save(proc_path)
 
         prompt = """
-Enhance this photo for a car sales listing.
+Edit the FIRST image using the SECOND image only as a reference for color/lighting.
 
-Rules:
-- Do NOT change car model, shape, wheels, badges
-- Do NOT add/remove objects
-- Do NOT alter background
-- Keep reflections natural
+ABSOLUTE RULES (must follow):
+- Preserve the exact car identity: same model, trim, badges, wheels, grille, headlights
+- Preserve exact geometry: body lines, proportions, wheel shape, window shape, panel gaps
+- Do NOT add/remove objects, text, logos, plates, people
+- Do NOT change background layout or reflections structure
+- No repainting, no new rims, no tint change
 
-Only:
-- Improve lighting
-- Improve contrast
-- Improve clarity
-- Reduce color cast
-- Subtle sharpening
+Allowed edits ONLY:
+- Neutralize color cast (make whites neutral)
+- Slightly deepen blacks
+- Recover highlights if possible
+- Mild contrast improvement
+- Very subtle clarity/sharpening (no HDR look)
 
-Photorealistic.
+Output must look like the SAME photo, just cleaner and more balanced.
+Photorealistic. No stylization.
 """
 
+        # IMPORTANT: pass both images (primary + reference)
         result = client.images.edit(
             model="chatgpt-image-latest",
-            image=open(tmp_path, "rb"),
+            image=[open(orig_path, "rb"), open(proc_path, "rb")],
             prompt=prompt,
-            size="1536x1024"
+            size="1024x1024"
         )
 
-        img_base64 = result.data[0].b64_json
-        final_bytes = base64.b64decode(img_base64)
+        out_b64 = result.data[0].b64_json
+        out_bytes = base64.b64decode(out_b64)
 
-        # ✅ return actual PNG bytes
-        return Response(content=final_bytes, media_type="image/png")
+        return Response(content=out_bytes, media_type="image/png")
 
     except Exception as e:
         return JSONResponse(
