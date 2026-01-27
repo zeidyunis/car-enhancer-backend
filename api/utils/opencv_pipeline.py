@@ -1,60 +1,25 @@
-import cv2
 import numpy as np
+from PIL import Image, ImageEnhance, ImageOps
 
 
-def enhance_image(img):
+def enhance_image(img: Image.Image) -> np.ndarray:
+    """
+    Lightweight deterministic MVP (no OpenCV):
+    - Auto-contrast (gentle)
+    - Slight brightness/contrast/color boost
+    Returns numpy array RGB.
+    """
 
-    # Convert to OpenCV format
-    img = np.array(img)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
 
-    h, w = img.shape[:2]
+    # gentle autocontrast
+    img = ImageOps.autocontrast(img, cutoff=1)
 
-    # ---------- Lens Correction ----------
-    K = np.array([
-        [w, 0, w / 2],
-        [0, w, h / 2],
-        [0, 0, 1]
-    ])
+    # subtle adjustments
+    img = ImageEnhance.Brightness(img).enhance(1.03)
+    img = ImageEnhance.Contrast(img).enhance(1.06)
+    img = ImageEnhance.Color(img).enhance(1.04)
+    img = ImageEnhance.Sharpness(img).enhance(1.05)
 
-    D = np.array([-0.15, 0.05, 0, 0])
-
-    map1, map2 = cv2.initUndistortRectifyMap(
-        K, D, None, K, (w, h), cv2.CV_32FC1
-    )
-
-    img = cv2.remap(img, map1, map2, cv2.INTER_LINEAR)
-
-    # ---------- Perspective Fix ----------
-    pts1 = np.float32([
-        [0, 0],
-        [w, 0],
-        [0, h],
-        [w, h]
-    ])
-
-    pts2 = np.float32([
-        [20, 20],
-        [w-20, 20],
-        [20, h-20],
-        [w-20, h-20]
-    ])
-
-    M = cv2.getPerspectiveTransform(pts1, pts2)
-    img = cv2.warpPerspective(img, M, (w, h))
-
-    # ---------- Tone Curve ----------
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-
-    l, a, b = cv2.split(lab)
-
-    clahe = cv2.createCLAHE(
-        clipLimit=2.5,
-        tileGridSize=(8, 8)
-    )
-
-    l = clahe.apply(l)
-
-    lab = cv2.merge((l, a, b))
-    img = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-
-    return img
+    return np.array(img)
