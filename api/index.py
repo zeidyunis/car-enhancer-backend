@@ -21,12 +21,16 @@ def root():
     return {"status": "ok"}
 
 
+@app.get("/health")
+def health():
+    has_key = bool(os.getenv("OPENAI_API_KEY"))
+    return {"status": "ok", "openai_key_present": has_key}
+
+
 @app.post("/enhance")
 async def enhance(file: UploadFile = File(...)):
     raw = await file.read()
 
-    # NOTE: HEIC/HEIF will fail unless you add pillow-heif later.
-    # For now we keep MVP stable with common formats (jpg/png/webp).
     image = Image.open(io.BytesIO(raw)).convert("RGB")
 
     processed = enhance_image(image)  # numpy RGB array
