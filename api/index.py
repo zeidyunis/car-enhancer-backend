@@ -23,76 +23,27 @@ def root():
 
 
 PROMPT = """
-You are editing an EXISTING real photo for a car sales listing. This is a strict PRESERVATION edit.
+Enhance this exact photo for a car sales listing.
 
-PRIMARY GOAL
-- Improve the photo’s presentation (cleaner color/exposure/contrast) while keeping the car and scene IDENTICAL.
-- Treat this as a “photo correction” task, not a redesign.
+ABSOLUTE IMMUTABLE (DO NOT CHANGE ANY OF THESE):
+- Wheels/rims/spokes/tires/center caps/center-cap logos (NO warping, NO blur, NO redraw).
+- Badges and any branding/logos anywhere.
+- Grille pattern/mesh/shape/texture.
+- Headlights/taillights/DRL shapes and internal LED patterns.
+- Window tint level.
+- Materials/trim: do NOT add chrome, do NOT brighten blacked-out trim, do NOT change matte↔gloss.
+- Any text, letters, numbers, icons, UI elements, screens, or buttons.
+- Body shape, reflections structure, background objects/layout.
 
-ABSOLUTE IMMUTABILITY (MUST NOT CHANGE)
+ALLOWED (GLOBAL PHOTO CORRECTIONS ONLY):
+- Correct white balance / remove color cast
+- Improve exposure + contrast naturally (not HDR)
+- Recover highlights a bit
+- Lift shadows slightly
+- Mild noise reduction
 
-1) Identity & Geometry
-- Do not change the car make/model/trim/year appearance.
-- Do not change body shape, panel gaps, ride height, stance, proportions, or perspective.
-- Do not change wheel size/position, tire profile, or alignment.
-- Do not change camera angle, FOV look, or composition.
-
-2) Wheels / Logos / Badges / Text (HIGHEST PRIORITY)
-- Do not alter wheels/rims/spokes/tires in any way.
-- Do not alter center caps, center-cap logos, lug nuts, valve stems, or tire sidewall text.
-- Keep ALL logos crisp and readable.
-- Do not alter any badges/emblems/brand marks.
-- Do not change or invent any text, numbers, license plates, stickers, decals, or signage.
-- Do not blur, warp, or "fix" them.
-
-3) Front/Rear Details
-- Do not change grille shape, pattern, or texture.
-- Do not change headlights, taillights, DRL shapes, LED patterns, lens textures, or tint.
-- Do not change vents, trim pieces, sensors, mirrors, or door handles.
-
-4) Materials & Finish
-- Do not add chrome, gloss, sparkle, metallic flakes, or coating effects.
-- Do not turn matte into gloss or gloss into matte.
-- Do not recolor blacked-out trim, plastics, or rubber.
-- Do not add new reflections.
-
-5) Scene Integrity
-- Do not add or remove objects.
-- Do not change background, sky, ground, or environment.
-- Do not invent textures or patterns.
-
-ALLOWED ADJUSTMENTS (GLOBAL ONLY)
-Apply ONLY subtle, realistic camera-style corrections:
-- White balance correction
-- Small exposure adjustment
-- Gentle contrast improvement
-- Mild highlight recovery
-- Mild shadow lift
-- Light noise reduction
-- Very subtle sharpening (no halos)
-
-STRICT SAFETY RULES
-- No local retouching on specific parts.
-- No reconstruction.
-- If an edit risks changing wheels, logos, headlights, grille, or text, DO NOT apply it.
-- Prefer minimal change over detail drift.
-
-OUTPUT QUALITY
-- Natural dealer-listing look.
-- No stylization.
-- No filters.
-- No cinematic grading.
-- Maintain resolution and aspect ratio.
-
-FINAL SELF-CHECK
-Before returning:
-- Wheels and logos identical and unwarped
-- Headlights and grille unchanged
-- All text readable and original
-- No new chrome or trim
-- No added or removed objects
-
-If any check fails, revert to a more conservative edit.
+No local edits. If a change risks altering physical details, do not apply it.
+Prefer minimal change over altering details. Photorealistic. No stylization.
 """.strip()
 
 
