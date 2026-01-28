@@ -7,7 +7,7 @@ import traceback
 import numpy as np
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import Response, JSONResponse
-from PIL import Image
+from PIL import Image, ImageFilter
 from openai import OpenAI
 
 from api.utils.opencv_pipeline import enhance_image
@@ -22,28 +22,29 @@ def root():
     return {"status": "ok"}
 
 
-@app.post("/enhance")
-async def enhance(file: UploadFile = File(...)):
-    try:
-        raw = await file.read()
-        original = Image.open(io.BytesIO(raw)).convert("RGB")
+def _edge_diff_score(a_rgb: np.ndarray, b_rgb: np.ndarray) -> float:
+    """
+    Average absolute difference between edge maps (0..255).
+    Higher means more structural change (bad for your use case).
+    """
+    a = Image.fromarray(a_rgb).convert("L").filter(ImageFilter.FIND_EDGES)
+    b = Image.fromarray(b_rgb).convert("L").filter(ImageFilter.FIND_EDGES)
+    a_np = np.array(a, dtype=np.int16)
+    b_np = np.array(b, dtype=np.int16)
+    return float(np.mean(np.abs(a_np - b_np)))
 
-        # downscale (helps size + speed)
-        MAX_SIZE = 2048
-        if max(original.size) > MAX_SIZE:
-            original.thumbnail((MAX_SIZE, MAX_SIZE), Image.LANCZOS)
 
-        # deterministic step (pillow-only)
-        processed_np = enhance_image(original)  # returns numpy RGB array
-        processed = Image.fromarray(processed_np.astype(np.uint8), mode="RGB")
+def _pixel_diff_score(a_rgb: np.ndarray, b_rgb: np.ndarray) -> float:
+    """
+    Average absolute pixel difference (0..255).
+    Higher means more overall change.
+    """
+    a_np = a_rgb.astype(np.int16)
+    b_np = b_rgb.astype(np.int16)
+    return float(np.mean(np.abs(a_np - b_np)))
 
-        # save for OpenAI edit
-        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        tmp_path = tmp.name
-        tmp.close()
-        processed.save(tmp_path)
 
-        prompt = """
+MASTER_PROMPT = """
 You are performing a STRICT photo enhancement, not a redesign.
 
 Your task is to apply ONLY global photographic corrections.
@@ -145,18 +146,76 @@ Technically accurate.
 No creative interpretation.
 
 Failure to follow any rule is incorrect.
-"""
+""".strip()
+
+
+@app.post("/enhance")
+async def enhance(file: UploadFile = File(...)):
+    try:
+        raw = await file.read()
+        original = Image.open(io.BytesIO(raw)).convert("RGB")
+
+        # Reduce upload/processing size (helps stability + reduces micro-detail repainting)
+        MAX_SIZE = 1536
+        if max(original.size) > MAX_SIZE:
+            original.thumbnail((MAX_SIZE, MAX_SIZE), Image.LANCZOS)
+
+        original_np = np.array(original, dtype=np.uint8)
+
+        # Deterministic step (no hallucinations)
+        processed_np = enhance_image(original).astype(np.uint8)
+        processed = Image.fromarray(processed_np, mode="RGB")
+
+        # Save deterministic image for OpenAI edit
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+        processed.save(tmp_path)
+
+        # AI polish
         result = client.images.edit(
-            model="gpt-image-1.5",
+            model="gpt-image-1",
             image=open(tmp_path, "rb"),
-            prompt=prompt,
-            size="1536x1024"
+            prompt=MASTER_PROMPT,
+            size="1024x1024",
         )
 
         out_b64 = result.data[0].b64_json
         out_bytes = base64.b64decode(out_b64)
+        ai_np = np.array(Image.open(io.BytesIO(out_bytes)).convert("RGB"), dtype=np.uint8)
 
-        return Response(content=out_bytes, media_type="image/png")
+        # --- AI CHANGE LIMITER (your requested knobs) ---
+        edge_score = _edge_diff_score(processed_np, ai_np)
+        pix_score = _pixel_diff_score(processed_np, ai_np)
+
+        # Start here (strict). Lower = even stricter.
+        EDGE_MAX = 5.0
+        PIX_MAX = 7.0
+
+        if edge_score > EDGE_MAX or pix_score > PIX_MAX:
+            # AI changed too much → return deterministic result
+            buf = io.BytesIO()
+            processed.save(buf, format="PNG")
+            return Response(
+                content=buf.getvalue(),
+                media_type="image/png",
+                headers={
+                    "X-AI-USED": "false",
+                    "X-EDGE-DIFF": str(edge_score),
+                    "X-PIX-DIFF": str(pix_score),
+                },
+            )
+
+        # AI acceptable → return AI output
+        return Response(
+            content=out_bytes,
+            media_type="image/png",
+            headers={
+                "X-AI-USED": "true",
+                "X-EDGE-DIFF": str(edge_score),
+                "X-PIX-DIFF": str(pix_score),
+            },
+        )
 
     except Exception as e:
         return JSONResponse(
