@@ -67,7 +67,7 @@ async def enhance(file: UploadFile = File(...)):
 
         # Responses API: force EDIT without using gpt-5
         resp = client.responses.create(
-            model="gpt-image-1.5",
+            model="chatgpt_image_latest",
             input=[{
                 "role": "user",
                 "content": [
