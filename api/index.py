@@ -174,10 +174,10 @@ async def enhance(file: UploadFile = File(...)):
 
         # AI polish
         result = client.images.edit(
-            model="gpt-image-1",
+            model="gpt-image-1.5",
             image=open(tmp_path, "rb"),
             prompt=MASTER_PROMPT,
-            size="1024x1024",
+            size="1536x1024",
         )
 
         out_b64 = result.data[0].b64_json
