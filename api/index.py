@@ -70,7 +70,7 @@ async def enhance(file: UploadFile = File(...)):
             model="gpt-image-1.5",
             image=open(tmp_path, "rb"),
             prompt=PROMPT,
-            size="auto"
+            size="1536x1024"
         )
 
         out_b64 = result.data[0].b64_json
