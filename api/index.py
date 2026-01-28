@@ -98,7 +98,7 @@ def _call_edit(tmp_path: str) -> bytes:
         model="gpt-image-1.5",
         image=open(tmp_path, "rb"),
         prompt=PROMPT,
-        size="auto",
+        size="1536x1024",
     )
     out_bytes = base64.b64decode(result.data[0].b64_json)
     return out_bytes
