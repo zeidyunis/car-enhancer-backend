@@ -95,7 +95,7 @@ def _call_edit(tmp_path: str) -> bytes:
     One OpenAI edit call -> PNG bytes.
     """
     result = client.images.edit(
-        model="gpt-image-1",
+        model="gpt-image-1.5",
         image=open(tmp_path, "rb"),
         prompt=PROMPT,
         size="auto",
