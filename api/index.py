@@ -80,7 +80,7 @@ async def enhance(file: UploadFile = File(...)):
 
         # AI edit (keep original aspect ratio)
         result = client.images.edit(
-            model="gpt-image-1.5",
+            model="chatgpt-image-latest",
             image=open(tmp_path, "rb"),
             prompt=PROMPT,
             size="auto",
