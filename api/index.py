@@ -112,8 +112,8 @@ async def enhance(file: UploadFile = File(...)):
         pix_score = _pixel_diff_score(processed_np, ai_np)
 
         # ✅ Looser so AI is allowed more often
-        EDGE_MAX = 8.0
-        PIX_MAX = 12.0
+        EDGE_MAX = 12.0
+        PIX_MAX = 17.0
 
         if edge_score > EDGE_MAX or pix_score > PIX_MAX:
             buf = io.BytesIO()
