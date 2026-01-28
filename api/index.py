@@ -91,7 +91,14 @@ async def enhance(file: UploadFile = File(...)):
                     ],
                 }
             ],
-            tools=[{"type": "image_generation", "action": "edit"}],
+            tools=[{
+  "type": "image_generation",
+  "action": "edit",
+  "quality": "high",
+  "size": "auto",
+  "format": "png"
+}]
+  
         )
 
         # Extract image result from response
