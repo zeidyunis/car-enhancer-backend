@@ -52,8 +52,8 @@ def post_polish_safe(img: Image.Image) -> Image.Image:
     No unsharp mask.
     """
     img = img.convert("RGB")
-    img = ImageEnhance.Contrast(img).enhance(1.03)   # tiny contrast lift
-    img = ImageEnhance.Sharpness(img).enhance(1.05)  # tiny crispness (safe)
+    img = ImageEnhance.Contrast(img).enhance(1.08)   # tiny contrast lift
+    img = ImageEnhance.Sharpness(img).enhance(1.09)  # tiny crispness (safe)
     return img
 
 
