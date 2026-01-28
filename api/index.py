@@ -22,27 +22,7 @@ def root():
     return {"status": "ok"}
 
 
-@app.post("/enhance")
-async def enhance(file: UploadFile = File(...)):
-    try:
-        raw = await file.read()
-        original = Image.open(io.BytesIO(raw)).convert("RGB")
-
-        processed_np = enhance_image(original)
-        processed = Image.fromarray(processed_np.astype(np.uint8), mode="RGB")
-
-        # save BOTH images
-        orig_tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        orig_path = orig_tmp.name
-        orig_tmp.close()
-        original.save(orig_path)
-
-        proc_tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        proc_path = proc_tmp.name
-        proc_tmp.close()
-        processed.save(proc_path)
-
-prompt = """
+MASTER_PROMPT = """
 You are performing a STRICT photo enhancement, not a redesign.
 
 Your task is to apply ONLY global photographic corrections.
@@ -144,12 +124,35 @@ Technically accurate.
 No creative interpretation.
 
 Failure to follow any rule is incorrect.
-"""
+""".strip()
 
+
+@app.post("/enhance")
+async def enhance(file: UploadFile = File(...)):
+    try:
+        raw = await file.read()
+        original = Image.open(io.BytesIO(raw)).convert("RGB")
+
+        # reduce size (helps stability + reduces micro-detail repainting)
+        MAX_SIZE = 1536
+        if max(original.size) > MAX_SIZE:
+            original.thumbnail((MAX_SIZE, MAX_SIZE), Image.LANCZOS)
+
+        # deterministic step
+        processed_np = enhance_image(original).astype(np.uint8)
+        processed = Image.fromarray(processed_np, mode="RGB")
+
+        # save for OpenAI edit
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+        processed.save(tmp_path)
+
+        # AI polish
         result = client.images.edit(
             model="gpt-image-1.5",
-            image=[open(orig_path, "rb"), open(proc_path, "rb")],
-            prompt=prompt,
+            image=open(tmp_path, "rb"),
+            prompt=MASTER_PROMPT,
             size="1536x1024"
         )
 
