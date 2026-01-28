@@ -80,7 +80,7 @@ async def enhance(file: UploadFile = File(...)):
                 "action": "edit",      # force edit
                 "quality": "high",     # more polish
                 "size": "auto",        # keep aspect ratio
-                "format": "png",
+                "output_format": "png",
             }],
         )
 
