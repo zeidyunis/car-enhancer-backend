@@ -1,7 +1,6 @@
 import io
 import os
 import base64
-import tempfile
 import traceback
 
 import numpy as np
@@ -14,7 +13,10 @@ from api.utils.opencv_pipeline import enhance_image
 
 
 app = FastAPI()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY")
+)
 
 
 @app.get("/")
@@ -28,36 +30,38 @@ You are performing a STRICT photo enhancement, not a redesign.
 Your task is to apply ONLY global photographic corrections.
 You are NOT allowed to change any physical, visual, or material details.
 
-ABSOLUTE IMMUTABLE RULES (MUST FOLLOW)
-- Preserve exact car identity and geometry (no warping, reshaping, redrawing).
-- Do NOT modify wheels in any way (rim design, tire text, center caps, wheel logos).
-- Do NOT modify badges/logos anywhere.
-- Do NOT modify headlights/taillights/LED patterns/housings.
-- Do NOT add chrome/gloss/metallic trim; do NOT turn blacked-out parts into chrome.
-- Do NOT change any interior text/icons/UI/screens/buttons.
-- Do NOT add/remove objects; do NOT change background layout.
-- Preserve reflections structure; do NOT invent reflections.
+ABSOLUTE IMMUTABLE RULES
+- Preserve exact car identity and geometry.
+- Do NOT modify wheels, rims, center caps, or tire text.
+- Do NOT modify badges or logos.
+- Do NOT modify headlights or taillights.
+- Do NOT add chrome, gloss, or metallic trim.
+- Do NOT change blacked-out parts.
+- Do NOT change interior text, icons, or screens.
+- Do NOT add/remove objects.
+- Preserve original reflections.
 
 ALLOWED (GLOBAL ONLY)
-- Neutralize color cast / correct white balance
-- Slight exposure correction
-- Slight contrast improvement
-- Very mild highlight recovery
-- Very mild shadow lift
-- Very subtle sharpening
-- Very light noise reduction
+- Neutralize white balance
+- Improve exposure
+- Improve contrast
+- Mild highlight recovery
+- Mild shadow lift
+- Subtle sharpening
+- Light noise reduction
 
-NO LOCAL EDITS. NO REGION EDITS.
-If a change risks altering physical details, do not apply it.
+NO LOCAL EDITS.
+NO REDRAWING.
+NO REPAINTING.
 
-Output must look like the SAME PHOTO, just cleaner and better balanced.
+Output must look like the SAME photo, only cleaner and better balanced.
 Photorealistic. No stylization.
 """.strip()
 
 
-def _to_data_url_png(pil_img: Image.Image) -> str:
+def pil_to_data_url(img: Image.Image) -> str:
     buf = io.BytesIO()
-    pil_img.save(buf, format="PNG")
+    img.save(buf, format="PNG")
     b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
     return f"data:image/png;base64,{b64}"
 
@@ -66,57 +70,74 @@ def _to_data_url_png(pil_img: Image.Image) -> str:
 async def enhance(file: UploadFile = File(...)):
     try:
         raw = await file.read()
+
+        # Load image
         original = Image.open(io.BytesIO(raw)).convert("RGB")
 
-        # Downscale for stability
+        # Downscale for stability (prevents AI from repainting micro-details)
         MAX_SIZE = 1536
         if max(original.size) > MAX_SIZE:
             original.thumbnail((MAX_SIZE, MAX_SIZE), Image.LANCZOS)
 
-        # Deterministic step first
+        # Deterministic baseline (no hallucination)
         processed_np = enhance_image(original).astype(np.uint8)
         processed = Image.fromarray(processed_np, mode="RGB")
 
-        # Put the *processed image* into context and FORCE an EDIT
-        processed_data_url = _to_data_url_png(processed)
+        # Convert to data URL for Responses API
+        processed_data_url = pil_to_data_url(processed)
 
+        # Call OpenAI in forced EDIT mode, high quality
         resp = client.responses.create(
             model="gpt-5",
             input=[
                 {
                     "role": "user",
                     "content": [
-                        {"type": "input_text", "text": MASTER_PROMPT},
-                        {"type": "input_image", "image_url": processed_data_url},
+                        {
+                            "type": "input_text",
+                            "text": MASTER_PROMPT
+                        },
+                        {
+                            "type": "input_image",
+                            "image_url": processed_data_url
+                        },
                     ],
                 }
             ],
-            tools=[{
-  "type": "image_generation",
-  "action": "edit",
-  "quality": "high",
-  "size": "auto",
-  "format": "png"
-}]
-  
+            tools=[
+                {
+                    "type": "image_generation",
+                    "action": "edit",
+                    "quality": "high",
+                    "size": "auto",
+                    "format": "png",
+                }
+            ],
         )
 
-        # Extract image result from response
-        img_b64 = None
+        # Extract image result
+        image_b64 = None
+
         for out in getattr(resp, "output", []):
             if getattr(out, "type", None) == "image_generation_call":
-                img_b64 = getattr(out, "result", None)
+                image_b64 = getattr(out, "result", None)
                 break
 
-        if not img_b64:
-            raise RuntimeError("No image_generation_call result returned from Responses API.")
+        if not image_b64:
+            raise RuntimeError("No image returned from OpenAI.")
 
-        out_bytes = base64.b64decode(img_b64)
+        out_bytes = base64.b64decode(image_b64)
 
-        return Response(content=out_bytes, media_type="image/png")
+        return Response(
+            content=out_bytes,
+            media_type="image/png"
+        )
 
     except Exception as e:
         return JSONResponse(
             status_code=500,
-            content={"error": str(e), "trace": traceback.format_exc()},
+            content={
+                "error": str(e),
+                "trace": traceback.format_exc(),
+            },
         )
