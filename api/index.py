@@ -1,12 +1,13 @@
 import io
 import os
 import base64
+import tempfile
 import traceback
 
 import numpy as np
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import Response, JSONResponse
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 from openai import OpenAI
 
 from api.utils.opencv_pipeline import enhance_image
@@ -24,28 +25,45 @@ def root():
 PROMPT = """
 Enhance this photo for a car sales listing.
 
-DO NOT CHANGE (ABSOLUTE):
-- Any text, letters, numbers, icons, UI elements, button symbols, screens.
-- Wheels/rims/center caps/wheel logos/tire text.
-- Badges/logos, grille pattern/shape, headlights/taillights.
-- Materials/trim (do NOT add chrome/gloss/metallic; do NOT brighten blacked-out parts).
-- Geometry/proportions, background layout, objects.
+ABSOLUTE RULES:
+- Do NOT change wheels, rims, spokes, center caps, or wheel logos.
+- Do NOT change grille pattern, shape, or texture.
+- Do NOT change badges or brand logos.
+- Do NOT change any text, numbers, icons, screens, or buttons.
+- Do NOT add chrome, gloss, metallic trim, or new reflections.
+- Do NOT recolor blacked-out or matte parts.
+- Do NOT change materials, geometry, or proportions.
+- Do NOT add/remove objects or background elements.
 
-ALLOWED (GLOBAL ONLY):
-- Neutralize color cast / correct white balance
-- Mild exposure + contrast improvement
-- Mild highlight recovery + mild shadow lift
-- Very subtle sharpening + light noise reduction
+ONLY DO (GLOBAL ONLY):
+- Correct white balance / remove color cast
+- Improve exposure and contrast naturally
+- Recover highlights if needed
+- Slightly deepen blacks (do not crush)
+- Add mild clarity (avoid halos)
+- Light noise reduction
 
-No local edits. No repainting. Photorealistic. No stylization.
+Photorealistic. No stylization. No repainting.
 """.strip()
 
 
-def _to_data_url_png(img: Image.Image) -> str:
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-    return f"data:image/png;base64,{b64}"
+def post_polish(pil_img: Image.Image) -> Image.Image:
+    """
+    Fix the 'matte/blurry' vibe safely (global only).
+    Very conservative: adds a touch of contrast + clarity without changing details.
+    """
+    img = pil_img.convert("RGB")
+
+    # Slight contrast (reduces matte/flat look)
+    img = ImageEnhance.Contrast(img).enhance(1.06)
+
+    # Tiny black point / depth (very mild)
+    img = ImageEnhance.Brightness(img).enhance(0.99)
+
+    # Mild clarity using unsharp mask (safe global sharpening)
+    img = img.filter(ImageFilter.UnsharpMask(radius=1.2, percent=110, threshold=3))
+
+    return img
 
 
 @app.post("/enhance")
@@ -54,48 +72,39 @@ async def enhance(file: UploadFile = File(...)):
         raw = await file.read()
         original = Image.open(io.BytesIO(raw)).convert("RGB")
 
-        # downscale for stability
-        MAX_SIZE = 1536
+        # limit size for stability (but keep aspect ratio)
+        MAX_SIZE = 2048
         if max(original.size) > MAX_SIZE:
             original.thumbnail((MAX_SIZE, MAX_SIZE), Image.LANCZOS)
 
-        # deterministic pre-pass
+        # deterministic cleanup (safe)
         processed_np = enhance_image(original).astype(np.uint8)
         processed = Image.fromarray(processed_np, mode="RGB")
 
-        processed_url = _to_data_url_png(processed)
+        # save temp
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+        processed.save(tmp_path)
 
-        # Responses API: force EDIT without using gpt-5
-        resp = client.responses.create(
-            model="chatgpt_image_latest",
-            input=[{
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": PROMPT},
-                    {"type": "input_image", "image_url": processed_url},
-                ],
-            }],
-            tools=[{
-                "type": "image_generation",
-                "action": "edit",      # force edit
-                "quality": "high",     # more polish
-                "size": "auto",        # keep aspect ratio
-                "output_format": "png",
-            }],
+        # AI edit (keep aspect ratio)
+        result = client.images.edit(
+            model="gpt-image-1",
+            image=open(tmp_path, "rb"),
+            prompt=PROMPT,
+            size="auto",  # ✅ important: avoids square resize blur
         )
 
-        # pull image result
-        img_b64 = None
-        for out in getattr(resp, "output", []):
-            if getattr(out, "type", None) == "image_generation_call":
-                img_b64 = getattr(out, "result", None)
-                break
+        out_b64 = result.data[0].b64_json
+        out_bytes = base64.b64decode(out_b64)
 
-        if not img_b64:
-            raise RuntimeError("No image returned from Responses API.")
+        # post-polish to remove matte/blurry feel
+        ai_img = Image.open(io.BytesIO(out_bytes)).convert("RGB")
+        final_img = post_polish(ai_img)
 
-        out_bytes = base64.b64decode(img_b64)
-        return Response(content=out_bytes, media_type="image/png")
+        buf = io.BytesIO()
+        final_img.save(buf, format="PNG")
+        return Response(content=buf.getvalue(), media_type="image/png")
 
     except Exception as e:
         return JSONResponse(
