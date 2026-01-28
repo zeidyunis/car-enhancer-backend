@@ -23,49 +23,37 @@ def root():
 
 
 PROMPT = """
-Enhance this exact photo for a car sales listing.
+Enhance this photo for a car sales listing.
 
-ABSOLUTE IMMUTABLE (DO NOT CHANGE ANY OF THESE):
-- Wheels/rims/spokes/tires/center caps/center-cap logos (NO warping, NO blur, NO redraw).
-- Badges and any branding/logos anywhere.
-- Grille pattern/mesh/shape/texture.
-- Headlights/taillights/DRL shapes and internal LED patterns.
-- Window tint level.
-- Materials/trim: do NOT add chrome, do NOT brighten blacked-out trim, do NOT change matte↔gloss.
-- Any text, letters, numbers, icons, UI elements, screens, or buttons (especially interior controls).
-- Body shape, reflections structure, background objects/layout.
+ABSOLUTE RULES:
+- Do NOT change wheels, rims, spokes, center caps, or wheel logos.
+- Do NOT change grille pattern, shape, or texture.
+- Do NOT change badges or brand logos.
+- Do NOT change any text, numbers, icons, screens, or buttons.
+- Do NOT add chrome, gloss, metallic trim, or new reflections.
+- Do NOT recolor blacked-out or matte parts.
+- Do NOT change materials, geometry, or proportions.
+- Do NOT add/remove objects or background elements.
 
-ALLOWED (GLOBAL PHOTO CORRECTIONS ONLY):
-- Correct white balance / remove fluorescent color cast
-- Improve exposure + contrast (natural, not HDR)
-- Recover highlights a bit (no fake reflections)
-- Lift shadows slightly (no “washed” look)
-- Mild noise reduction
-- Very subtle crispness (no halos)
+ONLY DO (GLOBAL ONLY):
+- Correct white balance / remove color cast
+- Improve exposure and contrast naturally
+- Recover highlights if needed
+- Light noise reduction
 
-IMPORTANT:
-- No local edits. No retouching individual parts.
-- If any enhancement risks changing physical details, DO NOT APPLY it.
-- Prefer returning a minimally changed image over altering any details.
-
-Photorealistic. No stylization.
+NO "clarity" effects, NO halos, NO crunchy sharpening.
+Photorealistic. No stylization. No repainting.
 """.strip()
 
 
 def post_polish_safe(img: Image.Image) -> Image.Image:
     """
-    Slightly stronger global polish to reduce 'matte' but still clean.
-    No unsharp mask (avoids halos/sloppy look).
+    Very subtle global polish to reduce 'matte' without looking sloppy.
+    No unsharp mask.
     """
     img = img.convert("RGB")
-
-    # Reduce matte: small contrast + tiny saturation
-    img = ImageEnhance.Contrast(img).enhance(1.06)
-    img = ImageEnhance.Color(img).enhance(1.03)       # tiny vibrance (safe)
-
-    # Very mild crispness (Pillow sharpness is safer than unsharp mask)
-    img = ImageEnhance.Sharpness(img).enhance(1.06)
-
+    img = ImageEnhance.Contrast(img).enhance(1.03)   # tiny contrast lift
+    img = ImageEnhance.Sharpness(img).enhance(1.05)  # tiny crispness (safe)
     return img
 
 
@@ -75,24 +63,24 @@ async def enhance(file: UploadFile = File(...)):
         raw = await file.read()
         original = Image.open(io.BytesIO(raw)).convert("RGB")
 
-        # Keep more detail (helps reduce "matte"), but still control size for Vercel stability
-        MAX_SIZE = 2560
+        # keep detail but avoid huge inputs
+        MAX_SIZE = 2048
         if max(original.size) > MAX_SIZE:
             original.thumbnail((MAX_SIZE, MAX_SIZE), Image.LANCZOS)
 
-        # Deterministic pre-processing (your pipeline)
+        # deterministic cleanup
         processed_np = enhance_image(original).astype(np.uint8)
         processed = Image.fromarray(processed_np, mode="RGB")
 
-        # Save temp for OpenAI edit
+        # temp file
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         tmp_path = tmp.name
         tmp.close()
         processed.save(tmp_path)
 
-        # AI edit (keep aspect ratio to avoid resize blur)
+        # AI edit (keep original aspect ratio)
         result = client.images.edit(
-            model="gpt-image-1.5",
+            model="gpt-image-1",
             image=open(tmp_path, "rb"),
             prompt=PROMPT,
             size="auto",
@@ -100,7 +88,7 @@ async def enhance(file: UploadFile = File(...)):
 
         out_bytes = base64.b64decode(result.data[0].b64_json)
 
-        # Global polish to reduce matte look
+        # safe, minimal polish
         ai_img = Image.open(io.BytesIO(out_bytes)).convert("RGB")
         final_img = post_polish_safe(ai_img)
 
