@@ -23,10 +23,6 @@ def root():
 
 
 def _edge_diff_score(a_rgb: np.ndarray, b_rgb: np.ndarray) -> float:
-    """
-    Average absolute difference between edge maps (0..255).
-    Higher means more structural change (bad for your use case).
-    """
     a = Image.fromarray(a_rgb).convert("L").filter(ImageFilter.FIND_EDGES)
     b = Image.fromarray(b_rgb).convert("L").filter(ImageFilter.FIND_EDGES)
     a_np = np.array(a, dtype=np.int16)
@@ -35,10 +31,6 @@ def _edge_diff_score(a_rgb: np.ndarray, b_rgb: np.ndarray) -> float:
 
 
 def _pixel_diff_score(a_rgb: np.ndarray, b_rgb: np.ndarray) -> float:
-    """
-    Average absolute pixel difference (0..255).
-    Higher means more overall change.
-    """
     a_np = a_rgb.astype(np.int16)
     b_np = b_rgb.astype(np.int16)
     return float(np.mean(np.abs(a_np - b_np)))
@@ -155,14 +147,12 @@ async def enhance(file: UploadFile = File(...)):
         raw = await file.read()
         original = Image.open(io.BytesIO(raw)).convert("RGB")
 
-        # Reduce upload/processing size (helps stability + reduces micro-detail repainting)
+        # Downscale for stability
         MAX_SIZE = 1536
         if max(original.size) > MAX_SIZE:
             original.thumbnail((MAX_SIZE, MAX_SIZE), Image.LANCZOS)
 
-        original_np = np.array(original, dtype=np.uint8)
-
-        # Deterministic step (no hallucinations)
+        # Deterministic baseline
         processed_np = enhance_image(original).astype(np.uint8)
         processed = Image.fromarray(processed_np, mode="RGB")
 
@@ -172,7 +162,7 @@ async def enhance(file: UploadFile = File(...)):
         tmp.close()
         processed.save(tmp_path)
 
-        # AI polish
+        # AI polish (fixed output size)
         result = client.images.edit(
             model="gpt-image-1.5",
             image=open(tmp_path, "rb"),
@@ -182,18 +172,23 @@ async def enhance(file: UploadFile = File(...)):
 
         out_b64 = result.data[0].b64_json
         out_bytes = base64.b64decode(out_b64)
-        ai_np = np.array(Image.open(io.BytesIO(out_bytes)).convert("RGB"), dtype=np.uint8)
 
-        # --- AI CHANGE LIMITER (your requested knobs) ---
+        ai_img = Image.open(io.BytesIO(out_bytes)).convert("RGB")
+
+        # ✅ Make AI output match processed size for scoring & safe fallback logic
+        if ai_img.size != processed.size:
+            ai_img = ai_img.resize(processed.size, Image.LANCZOS)
+
+        ai_np = np.array(ai_img, dtype=np.uint8)
+
+        # AI change limiter knobs
         edge_score = _edge_diff_score(processed_np, ai_np)
         pix_score = _pixel_diff_score(processed_np, ai_np)
 
-        # Start here (strict). Lower = even stricter.
         EDGE_MAX = 5.0
         PIX_MAX = 7.0
 
         if edge_score > EDGE_MAX or pix_score > PIX_MAX:
-            # AI changed too much → return deterministic result
             buf = io.BytesIO()
             processed.save(buf, format="PNG")
             return Response(
@@ -206,9 +201,11 @@ async def enhance(file: UploadFile = File(...)):
                 },
             )
 
-        # AI acceptable → return AI output
+        # Return AI bytes (note: resized version for scoring; return resized to match processed)
+        buf = io.BytesIO()
+        ai_img.save(buf, format="PNG")
         return Response(
-            content=out_bytes,
+            content=buf.getvalue(),
             media_type="image/png",
             headers={
                 "X-AI-USED": "true",
