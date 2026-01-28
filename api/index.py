@@ -42,102 +42,30 @@ You are performing a STRICT photo enhancement, not a redesign.
 Your task is to apply ONLY global photographic corrections.
 You are NOT allowed to change any physical, visual, or material details.
 
-=====================
 ABSOLUTE IMMUTABLE RULES (MUST FOLLOW)
-=====================
+- Preserve exact car identity and geometry (no warping, reshaping, redrawing).
+- Do NOT modify wheels in any way (rim design, tire text, center caps, wheel logos).
+- Do NOT modify badges/logos anywhere.
+- Do NOT modify headlights/taillights/LED patterns/housings.
+- Do NOT add chrome/gloss/metallic trim; do NOT turn blacked-out parts into chrome.
+- Do NOT change any interior text/icons/UI/screens/buttons.
+- Do NOT add/remove objects; do NOT change background layout.
+- Preserve reflections structure; do NOT invent reflections.
 
-IDENTITY & GEOMETRY
-- Preserve the exact car identity: model, trim, generation, body shape.
-- Preserve exact proportions, panel gaps, body lines, window shapes.
-- Do NOT warp, stretch, reshape, or redraw any part.
-
-WHEELS & LOGOS
-- Do NOT modify wheels in any way.
-- Do NOT change rim design, finish, color, or texture.
-- Do NOT change tire sidewall text.
-- Do NOT blur, redraw, replace, sharpen, or reinterpret center caps.
-- Wheel logos and brand marks must remain EXACTLY the same pixels.
-
-BADGES & BRANDING
-- Do NOT change, redraw, blur, sharpen, replace, or reinterpret any badges.
-- Do NOT modify brand logos anywhere on the car or interior.
-
-LIGHTS
-- Do NOT change headlights, taillights, indicators, DRLs, or reflectors.
-- Do NOT alter lens texture, LED patterns, or housing shape.
-
-MATERIALS & TRIM
-- Do NOT add chrome, gloss, metallic, or reflective trim.
-- Do NOT convert blacked-out parts into chrome or bright materials.
-- Do NOT change matte ↔ gloss finishes.
-- Do NOT change carbon fiber, piano black, wood, or aluminum textures.
-- Do NOT recolor interior or exterior materials.
-
-INTERIOR UI / TEXT / ICONS
-- Do NOT change any text, letters, numbers, symbols, icons, or fonts.
-- Do NOT alter dashboard controls, buttons, climate controls, steering buttons.
-- Do NOT change infotainment screens, instrument cluster, HUD, or displays.
-- Do NOT blur, redraw, or stylize any UI elements.
-
-BACKGROUND & ENVIRONMENT
-- Do NOT add, remove, or modify objects.
-- Do NOT change background layout, walls, reflections, scenery, or shadows.
-- Do NOT add people, cars, signs, or props.
-
-REFLECTIONS
-- Preserve original reflections structure.
-- Do NOT invent new reflections or highlights.
-
-=====================
-ALLOWED OPERATIONS (GLOBAL ONLY)
-=====================
-
-You may apply ONLY subtle, global, uniform adjustments:
-
+ALLOWED (GLOBAL ONLY) — MAKE IT NOTICEABLY BETTER BUT REALISTIC
 - Neutralize color cast / correct white balance
-- Slight exposure correction
-- Slight contrast improvement
-- Very mild highlight recovery
-- Very mild shadow lift
-- Very subtle sharpening
-- Very light noise reduction
+- Exposure correction (noticeable but not extreme)
+- Contrast improvement (noticeable but not HDR)
+- Highlight recovery (if possible)
+- Mild shadow lift
+- Subtle clarity/sharpening (do not create halos)
+- Light noise reduction
 
-These adjustments must affect the ENTIRE image evenly.
-No local edits. No region-specific edits.
+NO LOCAL EDITS. NO REGION EDITS. NO RETOUCHING SPECIFIC PARTS.
+If a change risks altering physical details, do not apply it.
 
-=====================
-STRICT PROHIBITIONS
-=====================
-
-- No repainting
-- No retouching of specific parts
-- No enhancement of individual components
-- No stylization
-- No HDR look
-- No cinematic grading
-- No “AI look”
-- No reinterpretation
-- No reconstruction
-- No artistic effects
-
-If any enhancement risks changing physical details,
-you must choose to leave the image unchanged.
-
-=====================
-OUTPUT REQUIREMENT
-=====================
-
-The output must look like the SAME PHOTO,
-taken with better lighting and camera settings,
-not a different version of the car.
-
-Photorealistic.
-Neutral.
-Conservative.
-Technically accurate.
-No creative interpretation.
-
-Failure to follow any rule is incorrect.
+Output must look like the SAME PHOTO, just cleaner and better balanced.
+Photorealistic. No stylization.
 """.strip()
 
 
@@ -162,7 +90,6 @@ async def enhance(file: UploadFile = File(...)):
         tmp.close()
         processed.save(tmp_path)
 
-        # AI polish (fixed output size)
         result = client.images.edit(
             model="gpt-image-1.5",
             image=open(tmp_path, "rb"),
@@ -175,18 +102,18 @@ async def enhance(file: UploadFile = File(...)):
 
         ai_img = Image.open(io.BytesIO(out_bytes)).convert("RGB")
 
-        # ✅ Make AI output match processed size for scoring & safe fallback logic
+        # Resize AI output to match processed size for scoring + final output
         if ai_img.size != processed.size:
             ai_img = ai_img.resize(processed.size, Image.LANCZOS)
 
         ai_np = np.array(ai_img, dtype=np.uint8)
 
-        # AI change limiter knobs
         edge_score = _edge_diff_score(processed_np, ai_np)
         pix_score = _pixel_diff_score(processed_np, ai_np)
 
-        EDGE_MAX = 5.0
-        PIX_MAX = 7.0
+        # ✅ Looser so AI is allowed more often
+        EDGE_MAX = 8.0
+        PIX_MAX = 12.0
 
         if edge_score > EDGE_MAX or pix_score > PIX_MAX:
             buf = io.BytesIO()
@@ -201,7 +128,6 @@ async def enhance(file: UploadFile = File(...)):
                 },
             )
 
-        # Return AI bytes (note: resized version for scoring; return resized to match processed)
         buf = io.BytesIO()
         ai_img.save(buf, format="PNG")
         return Response(
