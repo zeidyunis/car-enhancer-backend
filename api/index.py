@@ -7,7 +7,7 @@ import traceback
 import numpy as np
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import Response, JSONResponse
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance
 from openai import OpenAI
 
 from api.utils.opencv_pipeline import enhance_image
@@ -39,30 +39,21 @@ ONLY DO (GLOBAL ONLY):
 - Correct white balance / remove color cast
 - Improve exposure and contrast naturally
 - Recover highlights if needed
-- Slightly deepen blacks (do not crush)
-- Add mild clarity (avoid halos)
 - Light noise reduction
 
+NO "clarity" effects, NO halos, NO crunchy sharpening.
 Photorealistic. No stylization. No repainting.
 """.strip()
 
 
-def post_polish(pil_img: Image.Image) -> Image.Image:
+def post_polish_safe(img: Image.Image) -> Image.Image:
     """
-    Fix the 'matte/blurry' vibe safely (global only).
-    Very conservative: adds a touch of contrast + clarity without changing details.
+    Very subtle global polish to reduce 'matte' without looking sloppy.
+    No unsharp mask.
     """
-    img = pil_img.convert("RGB")
-
-    # Slight contrast (reduces matte/flat look)
-    img = ImageEnhance.Contrast(img).enhance(1.10)
-
-    # Tiny black point / depth (very mild)
-    img = ImageEnhance.Brightness(img).enhance(0.99)
-
-    # Mild clarity using unsharp mask (safe global sharpening)
-    img = img.filter(ImageFilter.UnsharpMask(radius=1.2, percent=80, threshold=3))
-
+    img = img.convert("RGB")
+    img = ImageEnhance.Contrast(img).enhance(1.03)   # tiny contrast lift
+    img = ImageEnhance.Sharpness(img).enhance(1.05)  # tiny crispness (safe)
     return img
 
 
@@ -72,35 +63,34 @@ async def enhance(file: UploadFile = File(...)):
         raw = await file.read()
         original = Image.open(io.BytesIO(raw)).convert("RGB")
 
-        # limit size for stability (but keep aspect ratio)
+        # keep detail but avoid huge inputs
         MAX_SIZE = 2048
         if max(original.size) > MAX_SIZE:
             original.thumbnail((MAX_SIZE, MAX_SIZE), Image.LANCZOS)
 
-        # deterministic cleanup (safe)
+        # deterministic cleanup
         processed_np = enhance_image(original).astype(np.uint8)
         processed = Image.fromarray(processed_np, mode="RGB")
 
-        # save temp
+        # temp file
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         tmp_path = tmp.name
         tmp.close()
         processed.save(tmp_path)
 
-        # AI edit (keep aspect ratio)
+        # AI edit (keep original aspect ratio)
         result = client.images.edit(
             model="gpt-image-1",
             image=open(tmp_path, "rb"),
             prompt=PROMPT,
-            size="auto",  # ✅ important: avoids square resize blur
+            size="auto",
         )
 
-        out_b64 = result.data[0].b64_json
-        out_bytes = base64.b64decode(out_b64)
+        out_bytes = base64.b64decode(result.data[0].b64_json)
 
-        # post-polish to remove matte/blurry feel
+        # safe, minimal polish
         ai_img = Image.open(io.BytesIO(out_bytes)).convert("RGB")
-        final_img = post_polish(ai_img)
+        final_img = post_polish_safe(ai_img)
 
         buf = io.BytesIO()
         final_img.save(buf, format="PNG")
