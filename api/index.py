@@ -55,13 +55,13 @@ def post_polish(pil_img: Image.Image) -> Image.Image:
     img = pil_img.convert("RGB")
 
     # Slight contrast (reduces matte/flat look)
-    img = ImageEnhance.Contrast(img).enhance(1.06)
+    img = ImageEnhance.Contrast(img).enhance(1.10)
 
     # Tiny black point / depth (very mild)
     img = ImageEnhance.Brightness(img).enhance(0.99)
 
     # Mild clarity using unsharp mask (safe global sharpening)
-    img = img.filter(ImageFilter.UnsharpMask(radius=1.2, percent=110, threshold=3))
+    img = img.filter(ImageFilter.UnsharpMask(radius=1.2, percent=80, threshold=3))
 
     return img
 
