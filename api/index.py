@@ -6,52 +6,80 @@ import traceback
 from fastapi import FastAPI, File, UploadFile, Response, HTTPException
 from PIL import Image, ImageOps
 from openai import OpenAI
+import openai
+
+
+# --------------------
+# App + Client
+# --------------------
 
 app = FastAPI()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY")
+)
 
 MAIN_MODEL = os.getenv("MAIN_MODEL", "gpt-4.1")
-MAX_PIXELS = int(os.getenv("MAX_PIXELS", str(4000 * 4000)))  # 16MP
+
+# Max allowed pixels (16MP default)
+MAX_PIXELS = int(os.getenv("MAX_PIXELS", str(4000 * 4000)))
 
 
-PROMPT = """Enhance this exact photo for an online car sales listing.
+# --------------------
+# Prompt (Hard Lock)
+# --------------------
 
-CRITICAL RULES (MUST FOLLOW):
-- This is an EDIT of the provided photo, NOT a new generated image.
-- Do NOT change car identity: model, trim, headlights, grille design, wheels, badges, logos, text, reflections, tint.
-- Do NOT add/remove objects or invent chrome trims.
-- Preserve ALL readable text/symbols (wheel center caps, brand marks, dashboard buttons/icons).
-- Keep geometry stable: no warping, stretching, reshaping.
+PROMPT = """
+Edit (NOT generate) this exact photo for a car listing.
 
-Allowed adjustments ONLY:
-- Neutralize color cast.
-- Mild exposure/contrast improvements (natural).
-- Mild highlight recovery + shadow lift.
-- Subtle clarity/sharpness without halos.
-Photorealistic and faithful to the input.
+STRICT RULES:
+- This is an EDIT, not a new image.
+- Do NOT change wheels, rims, center caps, logos, badges.
+- Do NOT change grille design.
+- Do NOT change headlights/taillights.
+- Do NOT warp text, icons, screens.
+- Do NOT add chrome or new trim.
+- Do NOT change body shape.
+- Do NOT repaint objects.
+
+ALLOWED ONLY:
+- Fix color cast
+- Slight exposure/contrast
+- Mild highlight recovery
+- Subtle sharpness
+- Light noise reduction
+
+Keep everything photorealistic and identical.
 """
 
 
-def _load_image(file_bytes: bytes) -> Image.Image:
+# --------------------
+# Helpers
+# --------------------
+
+def load_image(data: bytes) -> Image.Image:
     try:
-        im = Image.open(io.BytesIO(file_bytes))
+        im = Image.open(io.BytesIO(data))
         im = ImageOps.exif_transpose(im)
         return im.convert("RGB")
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid image upload.")
+        raise HTTPException(400, "Invalid image file")
 
 
-def _maybe_downscale(im: Image.Image) -> Image.Image:
+def downscale_if_needed(im: Image.Image) -> Image.Image:
     w, h = im.size
+
     if (w * h) <= MAX_PIXELS:
         return im
+
     scale = (MAX_PIXELS / float(w * h)) ** 0.5
-    nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+    nw = max(1, int(w * scale))
+    nh = max(1, int(h * scale))
+
     return im.resize((nw, nh), Image.Resampling.LANCZOS)
 
 
-def _pick_tool_size(w: int, h: int) -> str:
-    # tool sizes per docs
+def pick_tool_size(w: int, h: int) -> str:
     if w > h:
         return "1536x1024"
     if h > w:
@@ -59,56 +87,93 @@ def _pick_tool_size(w: int, h: int) -> str:
     return "1024x1024"
 
 
-def _pil_to_data_url_png(im: Image.Image) -> str:
+def pil_to_data_url(im: Image.Image) -> str:
     buf = io.BytesIO()
     im.save(buf, format="PNG")
-    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    b64 = base64.b64encode(buf.getvalue()).decode()
     return f"data:image/png;base64,{b64}"
 
 
-def _decode_image_b64(image_b64: str) -> Image.Image:
-    raw = base64.b64decode(image_b64)
+def decode_image(b64: str) -> Image.Image:
+    raw = base64.b64decode(b64)
     return Image.open(io.BytesIO(raw)).convert("RGB")
 
 
+# --------------------
+# Debug Root
+# --------------------
+
 @app.get("/")
 def root():
-    return {"ok": True}
+    return {
+        "ok": True,
+        "openai_version": getattr(openai, "__version__", "unknown"),
+        "has_client_responses": hasattr(client, "responses"),
+        "model": MAIN_MODEL,
+    }
 
+
+# --------------------
+# Main Endpoint
+# --------------------
 
 @app.post("/enhance")
 async def enhance(file: UploadFile = File(...)):
-    try:
-        data = await file.read()
-        if not data:
-            raise HTTPException(status_code=400, detail="Empty upload.")
 
-        original = _load_image(data)
+    try:
+
+        # --------------------
+        # Read upload
+        # --------------------
+
+        data = await file.read()
+
+        if not data:
+            raise HTTPException(400, "Empty upload")
+
+
+        # --------------------
+        # Load + preprocess
+        # --------------------
+
+        original = load_image(data)
         orig_w, orig_h = original.size
 
-        safe = _maybe_downscale(original)
-        tool_size = _pick_tool_size(*safe.size)
+        safe = downscale_if_needed(original)
 
-        img_url = _pil_to_data_url_png(safe)
+        tool_size = pick_tool_size(*safe.size)
 
-        # Guard: if SDK is old, fail with clear message
+        image_url = pil_to_data_url(safe)
+
+
+        # --------------------
+        # Guard SDK version
+        # --------------------
+
         if not hasattr(client, "responses"):
             raise HTTPException(
-                status_code=500,
-                detail="Your OpenAI Python SDK is too old (no client.responses). Pin openai==1.63.2 in api/requirements.txt and redeploy.",
+                500,
+                "OpenAI SDK too old. client.responses missing."
             )
+
+
+        # --------------------
+        # FORCE EDIT (Responses API)
+        # --------------------
 
         resp = client.responses.create(
             model=MAIN_MODEL,
+
             input=[
                 {
                     "role": "user",
                     "content": [
                         {"type": "input_text", "text": PROMPT},
-                        {"type": "input_image", "image_url": img_url},
+                        {"type": "input_image", "image_url": image_url},
                     ],
                 }
             ],
+
             tools=[
                 {
                     "type": "image_generation",
@@ -120,18 +185,41 @@ async def enhance(file: UploadFile = File(...)):
             ],
         )
 
-        calls = [o for o in resp.output if getattr(o, "type", None) == "image_generation_call"]
+
+        # --------------------
+        # Extract result
+        # --------------------
+
+        calls = [
+            o for o in resp.output
+            if getattr(o, "type", None) == "image_generation_call"
+        ]
+
         if not calls:
-            raise HTTPException(status_code=500, detail="No image_generation_call in response.")
+            raise HTTPException(500, "No image_generation_call returned")
 
         call0 = calls[0]
-        edited = _decode_image_b64(call0.result)
 
-        # resize back to original exact dims
-        edited = edited.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
+        edited = decode_image(call0.result)
+
+
+        # --------------------
+        # Resize back to original
+        # --------------------
+
+        edited = edited.resize(
+            (orig_w, orig_h),
+            Image.Resampling.LANCZOS
+        )
+
+
+        # --------------------
+        # Return PNG
+        # --------------------
 
         out = io.BytesIO()
         edited.save(out, format="PNG")
+
         return Response(
             content=out.getvalue(),
             media_type="image/png",
@@ -144,7 +232,12 @@ async def enhance(file: UploadFile = File(...)):
             },
         )
 
-    except HTTPException as he:
-        raise he
+
+    except HTTPException as e:
+        raise e
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            500,
+            f"{str(e)}\n{traceback.format_exc()}"
+        )
