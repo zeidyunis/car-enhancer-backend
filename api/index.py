@@ -42,15 +42,12 @@ ALLOWED (GLOBAL PHOTO CORRECTIONS ONLY):
 - Lift shadows slightly
 - Mild noise reduction
 
-No local edits. If a change risks altering physical details, do not apply it.
+No local edits. If any change risks altering details, DO NOT APPLY it.
 Prefer minimal change over altering details. Photorealistic. No stylization.
 """.strip()
 
 
 def _safe_polish(img: Image.Image) -> Image.Image:
-    """
-    Very mild global polish to reduce "matte" WITHOUT halos/sloppy look.
-    """
     img = img.convert("RGB")
     img = ImageEnhance.Contrast(img).enhance(1.05)
     img = ImageEnhance.Color(img).enhance(1.02)
@@ -58,107 +55,132 @@ def _safe_polish(img: Image.Image) -> Image.Image:
     return img
 
 
-def _resize_to_match(a: np.ndarray, b_img: Image.Image) -> np.ndarray:
-    """
-    Ensure b matches a's HxW for scoring.
-    """
-    h, w = a.shape[0], a.shape[1]
+def _resize_to_match(a_np: np.ndarray, b_img: Image.Image) -> np.ndarray:
+    h, w = a_np.shape[0], a_np.shape[1]
     if b_img.size != (w, h):
         b_img = b_img.resize((w, h), Image.LANCZOS)
     return np.array(b_img, dtype=np.uint8)
 
 
 def _score_similarity(processed_np: np.ndarray, candidate_np: np.ndarray) -> float:
-    """
-    Lower score = closer to processed (less hallucination).
-    Mix of pixel diff + edge diff (no OpenCV, no lockers).
-    """
     a = processed_np.astype(np.int16)
     b = candidate_np.astype(np.int16)
-
-    # Mean absolute pixel difference (RGB)
     pix = float(np.mean(np.abs(a - b)))
 
-    # Edge-map difference (structure changes)
     a_edges = Image.fromarray(processed_np).convert("L").filter(ImageFilter.FIND_EDGES)
     b_edges = Image.fromarray(candidate_np).convert("L").filter(ImageFilter.FIND_EDGES)
     ae = np.array(a_edges, dtype=np.int16)
     be = np.array(b_edges, dtype=np.int16)
     edge = float(np.mean(np.abs(ae - be)))
 
-    # Weighted total
-    return (pix * 1.0) + (edge * 0.6)
+    return (pix * 1.0) + (edge * 0.7)
 
 
-def _call_edit(tmp_path: str) -> bytes:
+def _return_png(img: Image.Image, headers: dict) -> Response:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return Response(content=buf.getvalue(), media_type="image/png", headers=headers)
+
+
+def _downscale_if_needed(img: Image.Image, max_dim: int = 4000) -> tuple[Image.Image, bool]:
     """
-    One OpenAI edit call -> PNG bytes.
+    If either dimension exceeds max_dim, downscale proportionally to fit within max_dim x max_dim.
+    Returns (image, did_resize).
     """
-    result = client.images.edit(
-        model="gpt-image-1.5",
-        image=open(tmp_path, "rb"),
-        prompt=PROMPT,
-        size="1536x1024",
-    )
-    out_bytes = base64.b64decode(result.data[0].b64_json)
-    return out_bytes
+    w, h = img.size
+    if max(w, h) <= max_dim:
+        return img, False
+
+    # thumbnail keeps aspect ratio
+    img = img.copy()
+    img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+    return img, True
 
 
 @app.post("/enhance")
 async def enhance(file: UploadFile = File(...)):
+    raw = b""
     try:
         raw = await file.read()
         original = Image.open(io.BytesIO(raw)).convert("RGB")
 
-        # Keep detail but limit huge images
-        MAX_SIZE = 2560
-        if max(original.size) > MAX_SIZE:
-            original.thumbnail((MAX_SIZE, MAX_SIZE), Image.LANCZOS)
+        # ✅ NEW: auto-downscale huge uploads to max 4000px longest side
+        original, resized = _downscale_if_needed(original, max_dim=4000)
 
-        # Deterministic base (your pipeline)
+        # deterministic base
         processed_np = enhance_image(original).astype(np.uint8)
         processed = Image.fromarray(processed_np, mode="RGB")
 
-        # Save once; we will edit the same deterministic image twice
+        # OpenAI edit (single call)
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         tmp_path = tmp.name
         tmp.close()
         processed.save(tmp_path)
 
-        # ---- BEST OF 2 ----
-        out1 = _call_edit(tmp_path)
-        out2 = _call_edit(tmp_path)
+        result = client.images.edit(
+            model="gpt-image-1",
+            image=open(tmp_path, "rb"),
+            prompt=PROMPT,
+            size="auto",
+        )
 
-        img1 = Image.open(io.BytesIO(out1)).convert("RGB")
-        img2 = Image.open(io.BytesIO(out2)).convert("RGB")
+        out_bytes = base64.b64decode(result.data[0].b64_json)
+        ai_img = Image.open(io.BytesIO(out_bytes)).convert("RGB")
 
-        cand1_np = _resize_to_match(processed_np, img1)
-        cand2_np = _resize_to_match(processed_np, img2)
+        # score vs deterministic; if too different, reject
+        ai_np = _resize_to_match(processed_np, ai_img)
+        s = _score_similarity(processed_np, ai_np)
 
-        s1 = _score_similarity(processed_np, cand1_np)
-        s2 = _score_similarity(processed_np, cand2_np)
+        # Hallucination gate
+        SCORE_MAX = 16.0
 
-        chosen_img = img1 if s1 <= s2 else img2
-        chosen_score = s1 if s1 <= s2 else s2
+        if s > SCORE_MAX:
+            fallback = _safe_polish(processed)
+            return _return_png(
+                fallback,
+                headers={
+                    "X-AI-USED": "false",
+                    "X-REASON": "diff_gate",
+                    "X-SCORE": str(s),
+                    "X-DOWNSCALED": "true" if resized else "false",
+                    "X-FINAL-WH": f"{original.size[0]}x{original.size[1]}",
+                },
+            )
 
-        # Mild polish (optional) to reduce matte look
-        chosen_img = _safe_polish(chosen_img)
-
-        buf = io.BytesIO()
-        chosen_img.save(buf, format="PNG")
-
-        return Response(
-            content=buf.getvalue(),
-            media_type="image/png",
+        final = _safe_polish(ai_img)
+        return _return_png(
+            final,
             headers={
-                "X-BO2-S1": str(s1),
-                "X-BO2-S2": str(s2),
-                "X-BO2-CHOSEN": "1" if s1 <= s2 else "2",
-                "X-BO2-SCORE": str(chosen_score),
+                "X-AI-USED": "true",
+                "X-SCORE": str(s),
+                "X-DOWNSCALED": "true" if resized else "false",
+                "X-FINAL-WH": f"{original.size[0]}x{original.size[1]}",
             },
         )
 
     except Exception as e:
+        msg = str(e)
+        if "billing_hard_limit" in msg or "hard limit" in msg or "billing" in msg:
+            # deterministic fallback if billing blocks AI
+            try:
+                # if original is already loaded, use it; otherwise decode from raw
+                img = Image.open(io.BytesIO(raw)).convert("RGB")
+                img, resized = _downscale_if_needed(img, max_dim=4000)
+                processed_np = enhance_image(img).astype(np.uint8)
+                processed = Image.fromarray(processed_np, mode="RGB")
+                fallback = _safe_polish(processed)
+                return _return_png(
+                    fallback,
+                    headers={
+                        "X-AI-USED": "false",
+                        "X-REASON": "billing",
+                        "X-DOWNSCALED": "true" if resized else "false",
+                        "X-FINAL-WH": f"{img.size[0]}x{img.size[1]}",
+                    },
+                )
+            except Exception:
+                pass
+
         return JSONResponse(
             status_code=500,
             content={"error": str(e), "trace": traceback.format_exc()},
