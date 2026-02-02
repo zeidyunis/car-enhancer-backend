@@ -56,7 +56,7 @@ def _return_png(img: Image.Image, headers: dict) -> Response:
 
 def _call_ai_edit(tmp_path: str) -> Image.Image:
     result = client.images.edit(
-        model="gpt-image-1",
+        model="gpt-image-1.5",
         image=open(tmp_path, "rb"),
         prompt=PROMPT,
         size="auto",
