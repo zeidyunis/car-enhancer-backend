@@ -141,7 +141,7 @@ async def enhance(file: UploadFile = File(...)):
         ai_np = _resize_to_match(processed_np, ai_img)
         s = _score_similarity(processed_np, ai_np)
 
-        SCORE_MAX = 28.0
+        SCORE_MAX = 40.0
 
         if s > SCORE_MAX:
             # Return deterministic, also matched to reference size
