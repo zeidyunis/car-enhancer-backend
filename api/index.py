@@ -64,39 +64,14 @@ def _call_ai_edit(tmp_path: str) -> Image.Image:
     return Image.open(io.BytesIO(out_bytes)).convert("RGB")
 
 
-def _score_similarity(processed: Image.Image, candidate: Image.Image) -> float:
-    # downscaled grayscale score (less false rejections)
-    a = processed.convert("L")
-    b = candidate.convert("L")
-
-    a_small = a.copy()
-    a_small.thumbnail((512, 512), Image.LANCZOS)
-    b_small = b.resize(a_small.size, Image.LANCZOS)
-
-    a_np = np.array(a_small, dtype=np.int16)
-    b_np = np.array(b_small, dtype=np.int16)
-    pix = float(np.mean(np.abs(a_np - b_np)))
-
-    a_e = a_small.filter(ImageFilter.FIND_EDGES)
-    b_e = b_small.filter(ImageFilter.FIND_EDGES)
-    ae = np.array(a_e, dtype=np.int16)
-    be = np.array(b_e, dtype=np.int16)
-    edge = float(np.mean(np.abs(ae - be)))
-
-    return (pix * 1.0) + (edge * 0.25)
-
-
 def _fit_into_canvas_no_crop(img: Image.Image, canvas_bg: Image.Image, out_size: tuple[int, int]) -> Image.Image:
     """
     Force EXACT output dimensions (out_size) with NO cropping.
-    Letterbox/pad if aspect differs.
+    If aspect differs, it pads (letterbox) over a blurred background.
     """
     out_w, out_h = out_size
-
-    # Background: blurred original (already at out_size)
     bg = canvas_bg.copy().filter(ImageFilter.GaussianBlur(radius=18))
 
-    # Fit candidate inside output size without cropping
     fitted = ImageOps.contain(img, (out_w, out_h), method=Image.LANCZOS)
 
     x = (out_w - fitted.size[0]) // 2
@@ -108,66 +83,48 @@ def _fit_into_canvas_no_crop(img: Image.Image, canvas_bg: Image.Image, out_size:
 
 @app.post("/enhance")
 async def enhance(file: UploadFile = File(...)):
-    raw = b""
     try:
         raw = await file.read()
         original_full = Image.open(io.BytesIO(raw)).convert("RGB")
 
-        # ✅ Keep the original uploaded dimensions as the final output target
+        # ✅ Final output will ALWAYS be same size as uploaded
         out_size = original_full.size
 
-        # Make a working copy for processing/AI to avoid huge costs
+        # Working copy for processing/AI to keep cost/time stable
         working = original_full.copy()
         MAX_WORK_DIM = 2560
         if max(working.size) > MAX_WORK_DIM:
             working.thumbnail((MAX_WORK_DIM, MAX_WORK_DIM), Image.LANCZOS)
 
-        # Deterministic base on working
+        # Deterministic base
         processed_np = enhance_image(working).astype(np.uint8)
         processed = Image.fromarray(processed_np, mode="RGB")
 
-        # AI edit on deterministic image
+        # Save for AI edit
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         tmp_path = tmp.name
         tmp.close()
         processed.save(tmp_path)
 
+        # ✅ AI edit (no diff gate; AI is always used)
         ai_img = _call_ai_edit(tmp_path)
 
-        # Diff-gate against deterministic (same working size)
-        s = _score_similarity(processed, ai_img)
-        SCORE_MAX = 30.0  # adjust if needed
-
-        # Prepare background at FINAL output size
+        # Return exact uploaded size, no crop
         canvas_bg = original_full.resize(out_size, Image.LANCZOS)
-
-        if s > SCORE_MAX:
-            # Reject AI -> deterministic, but still return EXACT original W×H
-            safe = _fit_into_canvas_no_crop(processed, canvas_bg, out_size)
-            return _return_png(
-                safe,
-                headers={
-                    "X-AI-USED": "false",
-                    "X-REASON": "diff_gate",
-                    "X-SCORE": str(s),
-                    "X-OUT-SIZE": f"{out_size[0]}x{out_size[1]}",
-                    "X-WORK-SIZE": f"{working.size[0]}x{working.size[1]}",
-                },
-            )
-
-        # Accept AI -> still return EXACT original W×H
         final = _fit_into_canvas_no_crop(ai_img, canvas_bg, out_size)
+
         return _return_png(
             final,
             headers={
                 "X-AI-USED": "true",
-                "X-SCORE": str(s),
                 "X-OUT-SIZE": f"{out_size[0]}x{out_size[1]}",
                 "X-WORK-SIZE": f"{working.size[0]}x{working.size[1]}",
+                "X-AI-SIZE": f"{ai_img.size[0]}x{ai_img.size[1]}",
             },
         )
 
     except Exception as e:
+        # ✅ No silent fallback. If OpenAI fails, you SEE it.
         return JSONResponse(
             status_code=500,
             content={"error": str(e), "trace": traceback.format_exc()},
