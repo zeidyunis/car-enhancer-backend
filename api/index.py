@@ -25,15 +25,14 @@ def root():
 PROMPT = """
 Edit (not recreate) this exact photo for a car sales listing.
 
-IMPORTANT FRAMING RULE:
-- Keep the original framing and composition exactly the same.
-- Do NOT crop, zoom, rotate, or change aspect ratio.
+FRAMING:
+- Keep the original framing/composition. Do NOT crop, zoom, rotate, or change aspect ratio.
 
 ABSOLUTE IMMUTABLE (DO NOT CHANGE):
-- Wheels/rims/spokes/tires/center caps/center-cap logos (no warping, no blur, no redraw)
+- Wheels/rims/spokes/tires/center caps/center-cap logos
 - Badges/logos anywhere
 - Grille pattern/mesh/shape/texture
-- Headlights/taillights/DRL shapes and internal LED patterns
+- Headlights/taillights/DRL shapes and internal patterns
 - Any text/numbers/icons/screens/buttons
 - Body shape, reflections structure, background objects/layout
 - Materials/trim: do NOT add chrome/gloss; do NOT brighten blacked-out trim; do NOT change matte↔gloss
@@ -65,53 +64,46 @@ def _call_ai_edit(tmp_path: str) -> Image.Image:
     return Image.open(io.BytesIO(out_bytes)).convert("RGB")
 
 
-def _match_to_reference_no_crop(img: Image.Image, reference: Image.Image) -> Image.Image:
-    """
-    Force output to reference size WITHOUT cropping.
-    If aspect differs, we letterbox using a blurred reference background.
-    """
-    ref_w, ref_h = reference.size
-    fitted = ImageOps.contain(img, (ref_w, ref_h), method=Image.LANCZOS)
-
-    bg = reference.copy().filter(ImageFilter.GaussianBlur(radius=18))
-
-    x = (ref_w - fitted.size[0]) // 2
-    y = (ref_h - fitted.size[1]) // 2
-    bg.paste(fitted, (x, y))
-    return bg
-
-
 def _score_similarity(processed: Image.Image, candidate: Image.Image) -> float:
-    """
-    Much less sensitive score:
-    - compare on small downscaled image (512px max side)
-    - compare in grayscale (luma)
-    - light edge component (also downscaled)
-    Lower = more similar.
-    """
-    # downscale both to same small size
+    # downscaled grayscale score (less false rejections)
     a = processed.convert("L")
     b = candidate.convert("L")
 
     a_small = a.copy()
-    b_small = b.copy()
     a_small.thumbnail((512, 512), Image.LANCZOS)
-    b_small = b_small.resize(a_small.size, Image.LANCZOS)
+    b_small = b.resize(a_small.size, Image.LANCZOS)
 
     a_np = np.array(a_small, dtype=np.int16)
     b_np = np.array(b_small, dtype=np.int16)
-
     pix = float(np.mean(np.abs(a_np - b_np)))
 
-    # light edge compare (still on small)
     a_e = a_small.filter(ImageFilter.FIND_EDGES)
     b_e = b_small.filter(ImageFilter.FIND_EDGES)
     ae = np.array(a_e, dtype=np.int16)
     be = np.array(b_e, dtype=np.int16)
     edge = float(np.mean(np.abs(ae - be)))
 
-    # weights tuned to avoid false rejections
     return (pix * 1.0) + (edge * 0.25)
+
+
+def _fit_into_canvas_no_crop(img: Image.Image, canvas_bg: Image.Image, out_size: tuple[int, int]) -> Image.Image:
+    """
+    Force EXACT output dimensions (out_size) with NO cropping.
+    Letterbox/pad if aspect differs.
+    """
+    out_w, out_h = out_size
+
+    # Background: blurred original (already at out_size)
+    bg = canvas_bg.copy().filter(ImageFilter.GaussianBlur(radius=18))
+
+    # Fit candidate inside output size without cropping
+    fitted = ImageOps.contain(img, (out_w, out_h), method=Image.LANCZOS)
+
+    x = (out_w - fitted.size[0]) // 2
+    y = (out_h - fitted.size[1]) // 2
+    bg.paste(fitted, (x, y))
+
+    return bg
 
 
 @app.post("/enhance")
@@ -119,55 +111,59 @@ async def enhance(file: UploadFile = File(...)):
     raw = b""
     try:
         raw = await file.read()
-        original = Image.open(io.BytesIO(raw)).convert("RGB")
+        original_full = Image.open(io.BytesIO(raw)).convert("RGB")
 
-        # keep detail but avoid huge images
-        MAX_DIM = 2560
-        if max(original.size) > MAX_DIM:
-            original.thumbnail((MAX_DIM, MAX_DIM), Image.LANCZOS)
+        # ✅ Keep the original uploaded dimensions as the final output target
+        out_size = original_full.size
 
-        # deterministic base
-        processed_np = enhance_image(original).astype(np.uint8)
+        # Make a working copy for processing/AI to avoid huge costs
+        working = original_full.copy()
+        MAX_WORK_DIM = 2560
+        if max(working.size) > MAX_WORK_DIM:
+            working.thumbnail((MAX_WORK_DIM, MAX_WORK_DIM), Image.LANCZOS)
+
+        # Deterministic base on working
+        processed_np = enhance_image(working).astype(np.uint8)
         processed = Image.fromarray(processed_np, mode="RGB")
 
-        # save deterministic image for AI edit
+        # AI edit on deterministic image
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         tmp_path = tmp.name
         tmp.close()
         processed.save(tmp_path)
 
-        # AI edit
         ai_img = _call_ai_edit(tmp_path)
 
-        # force output size/orientation to match uploaded
-        ai_img = _match_to_reference_no_crop(ai_img, reference=original)
-
-        # score vs deterministic; reject only if REALLY different
+        # Diff-gate against deterministic (same working size)
         s = _score_similarity(processed, ai_img)
+        SCORE_MAX = 30.0  # adjust if needed
 
-        # ✅ New sane threshold (your old scoring made 48 look “bad”)
-        SCORE_MAX = 50.0
+        # Prepare background at FINAL output size
+        canvas_bg = original_full.resize(out_size, Image.LANCZOS)
 
         if s > SCORE_MAX:
-            safe = _match_to_reference_no_crop(processed, reference=original)
+            # Reject AI -> deterministic, but still return EXACT original W×H
+            safe = _fit_into_canvas_no_crop(processed, canvas_bg, out_size)
             return _return_png(
                 safe,
                 headers={
                     "X-AI-USED": "false",
                     "X-REASON": "diff_gate",
                     "X-SCORE": str(s),
-                    "X-SCORE-MAX": str(SCORE_MAX),
-                    "X-SIZE": f"{original.size[0]}x{original.size[1]}",
+                    "X-OUT-SIZE": f"{out_size[0]}x{out_size[1]}",
+                    "X-WORK-SIZE": f"{working.size[0]}x{working.size[1]}",
                 },
             )
 
+        # Accept AI -> still return EXACT original W×H
+        final = _fit_into_canvas_no_crop(ai_img, canvas_bg, out_size)
         return _return_png(
-            ai_img,
+            final,
             headers={
                 "X-AI-USED": "true",
                 "X-SCORE": str(s),
-                "X-SCORE-MAX": str(SCORE_MAX),
-                "X-SIZE": f"{original.size[0]}x{original.size[1]}",
+                "X-OUT-SIZE": f"{out_size[0]}x{out_size[1]}",
+                "X-WORK-SIZE": f"{working.size[0]}x{working.size[1]}",
             },
         )
 
