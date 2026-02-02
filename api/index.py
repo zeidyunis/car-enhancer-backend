@@ -1,168 +1,160 @@
+import base64
 import io
 import os
-import base64
-import tempfile
-import traceback
+from typing import Tuple
 
-import numpy as np
-from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import Response, JSONResponse
+from fastapi import FastAPI, File, UploadFile, Response, HTTPException
 from PIL import Image, ImageOps
 from openai import OpenAI
 
-from api.utils.opencv_pipeline import enhance_image
-
-
 app = FastAPI()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI()
+
+# Main “controller” model for Responses API (NOT the image model).
+# Docs show gpt-4.1 works with image_generation tool. :contentReference[oaicite:3]{index=3}
+MAIN_MODEL = os.getenv("MAIN_MODEL", "gpt-4.1")
+
+# Hard cap to protect your Vercel function time/memory.
+# (Vercel also has request body limits; huge uploads may 413 before reaching code.)
+MAX_PIXELS = int(os.getenv("MAX_PIXELS", str(4000 * 4000)))  # 16MP default
+
+
+PROMPT = """Enhance this exact photo for an online car sales listing.
+
+CRITICAL RULES (MUST FOLLOW):
+- This is an EDIT of the provided photo, NOT a new generated image.
+- Do NOT change the car identity: model, trim, headlights, grille design, wheels, badges, logos, text, reflections, tint level.
+- Do NOT add/remove objects, do NOT invent chrome trims, do NOT modify body lines, panel gaps, vents, emblems.
+- Preserve ALL readable text and symbols (wheel center caps, dashboard buttons, brand marks, license plate text if present).
+- Keep geometry stable: no warping, no stretching, no reshaping.
+
+Allowed adjustments ONLY:
+- Correct minor lens distortion and perspective subtly (keep proportions realistic).
+- Neutralize color cast (especially fluorescent/green/yellow indoor cast).
+- Slightly deepen blacks, recover highlights, reduce blown lights.
+- Subtle clarity/sharpness improvement without halos.
+- Gentle contrast and vibrance improvements, realistic.
+
+Output must remain photorealistic and faithful to the input image.
+"""
+
+
+def _load_image(file_bytes: bytes) -> Image.Image:
+    try:
+        im = Image.open(io.BytesIO(file_bytes))
+        # Respect EXIF orientation so we don't “cut” / rotate wrong
+        im = ImageOps.exif_transpose(im)
+        return im
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not read image. Upload a valid PNG/JPEG/WEBP.")
+
+
+def _maybe_downscale(im: Image.Image) -> Image.Image:
+    w, h = im.size
+    if (w * h) <= MAX_PIXELS:
+        return im
+    # scale down uniformly
+    scale = (MAX_PIXELS / float(w * h)) ** 0.5
+    nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+    return im.resize((nw, nh), Image.Resampling.LANCZOS)
+
+
+def _pick_tool_size(w: int, h: int) -> str:
+    # Available tool sizes: 1024x1024, 1536x1024, 1024x1536, or auto :contentReference[oaicite:4]{index=4}
+    if w == h:
+        return "1024x1024"
+    return "1536x1024" if w > h else "1024x1536"
+
+
+def _pil_to_data_url_png(im: Image.Image) -> str:
+    # Use PNG for maximal fidelity into the model
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return f"data:image/png;base64,{b64}"
+
+
+def _decode_tool_image_base64(image_b64: str) -> Image.Image:
+    try:
+        raw = base64.b64decode(image_b64)
+        return Image.open(io.BytesIO(raw)).convert("RGB")
+    except Exception:
+        raise HTTPException(status_code=500, detail="OpenAI returned invalid image data.")
 
 
 @app.get("/")
 def root():
-    return {"status": "ok"}
-
-
-PROMPT = """
-Edit (not recreate) this exact photo for a car sales listing.
-
-FRAMING (STRICT):
-- Keep the original framing/composition exactly the same.
-- Do NOT crop, zoom, rotate, or change aspect ratio.
-
-ABSOLUTE IMMUTABLE (DO NOT CHANGE):
-- Wheels/rims/spokes/tires/center caps/center-cap logos
-- Badges/logos anywhere
-- Grille pattern/mesh/shape/texture
-- Headlights/taillights/DRL shapes and internal patterns
-- Any text/numbers/icons/screens/buttons
-- Body shape, reflections structure, background objects/layout
-- Materials/trim: do NOT add chrome/gloss; do NOT brighten blacked-out trim; do NOT change matte↔gloss
-
-ALLOWED (GLOBAL ONLY):
-- Correct white balance / remove cast
-- Small exposure + contrast improvement (natural)
-- Mild highlight recovery, mild shadow lift
-- Mild noise reduction only if needed (do not smear texture)
-
-No local retouching, no HDR/clarity look. Photorealistic.
-""".strip()
-
-
-ALLOWED_SIZES = [(1024, 1024), (1536, 1024), (1024, 1536)]  # w,h
-
-
-def _guess_output_format(upload: UploadFile, pil_format: str | None) -> tuple[str, str, str]:
-    ct = (upload.content_type or "").lower()
-    pf = (pil_format or "").upper()
-    if "png" in ct or pf == "PNG":
-        return "PNG", "image/png", "png"
-    if "jpeg" in ct or "jpg" in ct or pf in ("JPEG", "JPG"):
-        return "JPEG", "image/jpeg", "jpg"
-    return "JPEG", "image/jpeg", "jpg"
-
-
-def _save_bytes(img: Image.Image, fmt: str) -> bytes:
-    buf = io.BytesIO()
-    if fmt == "PNG":
-        img.save(buf, format="PNG", optimize=True)
-    else:
-        img.save(buf, format="JPEG", quality=92, subsampling=1, optimize=True)
-    return buf.getvalue()
-
-
-def _choose_api_canvas(w: int, h: int) -> tuple[int, int]:
-    ar = w / h
-    if ar > 1.15:
-        return 1536, 1024
-    if ar < 0.87:
-        return 1024, 1536
-    return 1024, 1024
-
-
-def _pad_to_canvas(img: Image.Image, canvas_w: int, canvas_h: int) -> tuple[Image.Image, tuple[int, int, int, int]]:
-    """
-    Fit original image into allowed API canvas WITHOUT cropping.
-    Returns:
-      - canvas image (RGB) of size (canvas_w, canvas_h)
-      - content box (left, top, right, bottom) where real pixels live
-    """
-    # resize to fit inside canvas
-    fitted = ImageOps.contain(img, (canvas_w, canvas_h), method=Image.LANCZOS)
-
-    canvas = Image.new("RGB", (canvas_w, canvas_h), (18, 18, 18))  # dark neutral border
-    x = (canvas_w - fitted.size[0]) // 2
-    y = (canvas_h - fitted.size[1]) // 2
-    canvas.paste(fitted, (x, y))
-
-    box = (x, y, x + fitted.size[0], y + fitted.size[1])
-    return canvas, box
-
-
-def _call_ai_edit(tmp_path: str, size_str: str) -> Image.Image:
-    result = client.images.edit(
-        model="gpt-image-1.5",
-        image=open(tmp_path, "rb"),
-        prompt=PROMPT,
-        size=size_str,  # force one of allowed sizes; prevents "auto" surprises
-    )
-    out_bytes = base64.b64decode(result.data[0].b64_json)
-    return Image.open(io.BytesIO(out_bytes)).convert("RGB")
+    return {"ok": True, "endpoints": ["/enhance (POST multipart/form-data file=...)"]}
 
 
 @app.post("/enhance")
 async def enhance(file: UploadFile = File(...)):
+    # 1) Read upload
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty upload.")
+
+    # 2) Load + orient + optional downscale
+    original = _load_image(data).convert("RGB")
+    orig_w, orig_h = original.size
+
+    safe = _maybe_downscale(original)
+    tool_size = _pick_tool_size(*safe.size)
+
+    # 3) Prepare image for Responses API (image must be in context when forcing edit) :contentReference[oaicite:5]{index=5}
+    img_url = _pil_to_data_url_png(safe)
+
+    # 4) FORCE EDIT via Responses API image_generation tool with action:"edit" :contentReference[oaicite:6]{index=6}
     try:
-        raw = await file.read()
-
-        pil_in = Image.open(io.BytesIO(raw))
-        pil_in = ImageOps.exif_transpose(pil_in)  # iPhone rotation fix
-        original_full = pil_in.convert("RGB")
-
-        orig_w, orig_h = original_full.size
-        out_fmt, out_mime, out_ext = _guess_output_format(file, pil_in.format)
-
-        # 1) pick API canvas size based on original orientation
-        canvas_w, canvas_h = _choose_api_canvas(orig_w, orig_h)
-        size_str = f"{canvas_w}x{canvas_h}"
-
-        # 2) pad to canvas (no crop), keep box of real content
-        canvas_img, box = _pad_to_canvas(original_full, canvas_w, canvas_h)
-
-        # 3) deterministic on canvas (so the AI sees same canvas)
-        det_np = enhance_image(canvas_img).astype(np.uint8)
-        det_img = Image.fromarray(det_np, mode="RGB")
-
-        # 4) AI edit on deterministic canvas (forced size)
-        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        tmp_path = tmp.name
-        tmp.close()
-        det_img.save(tmp_path)
-
-        ai_canvas = _call_ai_edit(tmp_path, size_str=size_str)
-
-        # 5) crop back to ONLY real content (removes borders)
-        ai_cropped = ai_canvas.crop(box)
-
-        # 6) resize back to original uploaded size (exact)
-        final = ai_cropped.resize((orig_w, orig_h), Image.LANCZOS)
-
-        body = _save_bytes(final, out_fmt)
-
-        return Response(
-            content=body,
-            media_type=out_mime,
-            headers={
-                "X-AI-USED": "true",
-                "X-ORIG": f"{orig_w}x{orig_h}",
-                "X-API-CANVAS": size_str,
-                "X-BOX": f"{box[0]},{box[1]},{box[2]},{box[3]}",
-                "X-OUT-FORMAT": out_fmt,
-                "Content-Disposition": f'inline; filename="enhanced.{out_ext}"',
-            },
+        resp = client.responses.create(
+            model=MAIN_MODEL,
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": PROMPT},
+                        {"type": "input_image", "image_url": img_url},
+                    ],
+                }
+            ],
+            tools=[
+                {
+                    "type": "image_generation",
+                    "action": "edit",
+                    "input_fidelity": "high",
+                    "size": tool_size,
+                    "quality": "high",
+                }
+            ],
         )
-
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e), "trace": traceback.format_exc()},
-        )
+        raise HTTPException(status_code=500, detail=f"OpenAI error: {str(e)}")
+
+    # 5) Extract tool output
+    calls = [o for o in resp.output if getattr(o, "type", None) == "image_generation_call"]
+    if not calls:
+        raise HTTPException(status_code=500, detail="No image_generation_call in response.")
+    call0 = calls[0]
+    image_b64 = call0.result
+    action_used = getattr(call0, "action", "unknown")
+
+    # 6) Decode and RESIZE BACK to original exact dimensions (prevents “cutting”)
+    edited = _decode_tool_image_base64(image_b64)
+
+    # If we downscaled before tool, upscale back to the original size
+    edited = edited.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
+
+    # 7) Return PNG bytes
+    out_buf = io.BytesIO()
+    edited.save(out_buf, format="PNG")
+    out_bytes = out_buf.getvalue()
+
+    headers = {
+        "x-ai-used": "true",
+        "x-action": str(action_used),
+        "x-orig-size": f"{orig_w}x{orig_h}",
+        "x-tool-size": tool_size,
+        "cache-control": "no-store",
+    }
+
+    return Response(content=out_bytes, media_type="image/png", headers=headers)
