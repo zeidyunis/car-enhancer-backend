@@ -132,7 +132,7 @@ async def enhance(file: UploadFile = File(...)):
         s = _score_similarity(processed_np, ai_np)
 
         # Hallucination gate
-        SCORE_MAX = 16.0
+        SCORE_MAX = 22.0
 
         if s > SCORE_MAX:
             fallback = _safe_polish(processed)
