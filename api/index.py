@@ -8,26 +8,11 @@ from PIL import Image, ImageOps
 from openai import OpenAI
 import openai
 
-
-# --------------------
-# App + Client
-# --------------------
-
 app = FastAPI()
-
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
-)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 MAIN_MODEL = os.getenv("MAIN_MODEL", "gpt-4.1")
-
-# Max allowed pixels (16MP default)
 MAX_PIXELS = int(os.getenv("MAX_PIXELS", str(4000 * 4000)))
-
-
-# --------------------
-# Prompt (Hard Lock)
-# --------------------
 
 PROMPT = """
 Edit (NOT generate) this exact photo for a car listing.
@@ -50,12 +35,8 @@ ALLOWED ONLY:
 - Light noise reduction
 
 Keep everything photorealistic and identical.
-"""
+""".strip()
 
-
-# --------------------
-# Helpers
-# --------------------
 
 def load_image(data: bytes) -> Image.Image:
     try:
@@ -68,14 +49,11 @@ def load_image(data: bytes) -> Image.Image:
 
 def downscale_if_needed(im: Image.Image) -> Image.Image:
     w, h = im.size
-
     if (w * h) <= MAX_PIXELS:
         return im
-
     scale = (MAX_PIXELS / float(w * h)) ** 0.5
     nw = max(1, int(w * scale))
     nh = max(1, int(h * scale))
-
     return im.resize((nw, nh), Image.Resampling.LANCZOS)
 
 
@@ -99,71 +77,38 @@ def decode_image(b64: str) -> Image.Image:
     return Image.open(io.BytesIO(raw)).convert("RGB")
 
 
-# --------------------
-# Debug Root
-# --------------------
-
 @app.get("/")
 def root():
+    return {"ok": True}
+
+
+@app.get("/version")
+def version():
     return {
-        "ok": True,
         "openai_version": getattr(openai, "__version__", "unknown"),
         "has_client_responses": hasattr(client, "responses"),
-        "model": MAIN_MODEL,
     }
 
 
-# --------------------
-# Main Endpoint
-# --------------------
-
 @app.post("/enhance")
 async def enhance(file: UploadFile = File(...)):
-
     try:
-
-        # --------------------
-        # Read upload
-        # --------------------
-
         data = await file.read()
-
         if not data:
             raise HTTPException(400, "Empty upload")
-
-
-        # --------------------
-        # Load + preprocess
-        # --------------------
 
         original = load_image(data)
         orig_w, orig_h = original.size
 
         safe = downscale_if_needed(original)
-
         tool_size = pick_tool_size(*safe.size)
-
         image_url = pil_to_data_url(safe)
 
-
-        # --------------------
-        # Guard SDK version
-        # --------------------
-
         if not hasattr(client, "responses"):
-            raise HTTPException(
-                500,
-                "OpenAI SDK too old. client.responses missing."
-            )
-
-
-        # --------------------
-        # FORCE EDIT (Responses API)
-        # --------------------
+            raise HTTPException(500, "OpenAI SDK too old. client.responses missing.")
 
         resp = client.responses.create(
             model=MAIN_MODEL,
-
             input=[
                 {
                     "role": "user",
@@ -173,7 +118,6 @@ async def enhance(file: UploadFile = File(...)):
                     ],
                 }
             ],
-
             tools=[
                 {
                     "type": "image_generation",
@@ -185,37 +129,13 @@ async def enhance(file: UploadFile = File(...)):
             ],
         )
 
-
-        # --------------------
-        # Extract result
-        # --------------------
-
-        calls = [
-            o for o in resp.output
-            if getattr(o, "type", None) == "image_generation_call"
-        ]
-
+        calls = [o for o in resp.output if getattr(o, "type", None) == "image_generation_call"]
         if not calls:
             raise HTTPException(500, "No image_generation_call returned")
 
         call0 = calls[0]
-
         edited = decode_image(call0.result)
-
-
-        # --------------------
-        # Resize back to original
-        # --------------------
-
-        edited = edited.resize(
-            (orig_w, orig_h),
-            Image.Resampling.LANCZOS
-        )
-
-
-        # --------------------
-        # Return PNG
-        # --------------------
+        edited = edited.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
 
         out = io.BytesIO()
         edited.save(out, format="PNG")
@@ -232,12 +152,7 @@ async def enhance(file: UploadFile = File(...)):
             },
         )
 
-
     except HTTPException as e:
         raise e
-
     except Exception as e:
-        raise HTTPException(
-            500,
-            f"{str(e)}\n{traceback.format_exc()}"
-        )
+        raise HTTPException(500, f"{str(e)}\n{traceback.format_exc()}")
