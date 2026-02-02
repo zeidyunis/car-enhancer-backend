@@ -82,21 +82,6 @@ def _return_png(img: Image.Image, headers: dict) -> Response:
     return Response(content=buf.getvalue(), media_type="image/png", headers=headers)
 
 
-def _downscale_if_needed(img: Image.Image, max_dim: int = 4000) -> tuple[Image.Image, bool]:
-    """
-    If either dimension exceeds max_dim, downscale proportionally to fit within max_dim x max_dim.
-    Returns (image, did_resize).
-    """
-    w, h = img.size
-    if max(w, h) <= max_dim:
-        return img, False
-
-    # thumbnail keeps aspect ratio
-    img = img.copy()
-    img.thumbnail((max_dim, max_dim), Image.LANCZOS)
-    return img, True
-
-
 @app.post("/enhance")
 async def enhance(file: UploadFile = File(...)):
     raw = b""
@@ -104,21 +89,18 @@ async def enhance(file: UploadFile = File(...)):
         raw = await file.read()
         original = Image.open(io.BytesIO(raw)).convert("RGB")
 
-        # ✅ NEW: auto-downscale huge uploads to max 4000px longest side
-        original, resized = _downscale_if_needed(original, max_dim=4000)
-
         # deterministic base
         processed_np = enhance_image(original).astype(np.uint8)
         processed = Image.fromarray(processed_np, mode="RGB")
 
-        # OpenAI edit (single call)
+        # OpenAI edit
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         tmp_path = tmp.name
         tmp.close()
         processed.save(tmp_path)
 
         result = client.images.edit(
-            model="gpt-image-1.5",
+            model="gpt-image-1",
             image=open(tmp_path, "rb"),
             prompt=PROMPT,
             size="auto",
@@ -131,8 +113,8 @@ async def enhance(file: UploadFile = File(...)):
         ai_np = _resize_to_match(processed_np, ai_img)
         s = _score_similarity(processed_np, ai_np)
 
-        # Hallucination gate
-        SCORE_MAX = 22.0
+        # ✅ LESS STRICT GATE (was ~16). This was rejecting almost everything.
+        SCORE_MAX = 28.0
 
         if s > SCORE_MAX:
             fallback = _safe_polish(processed)
@@ -142,8 +124,7 @@ async def enhance(file: UploadFile = File(...)):
                     "X-AI-USED": "false",
                     "X-REASON": "diff_gate",
                     "X-SCORE": str(s),
-                    "X-DOWNSCALED": "true" if resized else "false",
-                    "X-FINAL-WH": f"{original.size[0]}x{original.size[1]}",
+                    "X-SCORE-MAX": str(SCORE_MAX),
                 },
             )
 
@@ -153,30 +134,22 @@ async def enhance(file: UploadFile = File(...)):
             headers={
                 "X-AI-USED": "true",
                 "X-SCORE": str(s),
-                "X-DOWNSCALED": "true" if resized else "false",
-                "X-FINAL-WH": f"{original.size[0]}x{original.size[1]}",
+                "X-SCORE-MAX": str(SCORE_MAX),
             },
         )
 
     except Exception as e:
         msg = str(e)
         if "billing_hard_limit" in msg or "hard limit" in msg or "billing" in msg:
-            # deterministic fallback if billing blocks AI
+            # billing fallback: return deterministic
             try:
-                # if original is already loaded, use it; otherwise decode from raw
                 img = Image.open(io.BytesIO(raw)).convert("RGB")
-                img, resized = _downscale_if_needed(img, max_dim=4000)
                 processed_np = enhance_image(img).astype(np.uint8)
                 processed = Image.fromarray(processed_np, mode="RGB")
                 fallback = _safe_polish(processed)
                 return _return_png(
                     fallback,
-                    headers={
-                        "X-AI-USED": "false",
-                        "X-REASON": "billing",
-                        "X-DOWNSCALED": "true" if resized else "false",
-                        "X-FINAL-WH": f"{img.size[0]}x{img.size[1]}",
-                    },
+                    headers={"X-AI-USED": "false", "X-REASON": "billing"},
                 )
             except Exception:
                 pass
