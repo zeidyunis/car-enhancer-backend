@@ -3,6 +3,7 @@ import os
 import base64
 import tempfile
 import traceback
+import math
 
 import numpy as np
 from fastapi import FastAPI, File, UploadFile
@@ -25,8 +26,9 @@ def root():
 PROMPT = """
 Edit (not recreate) this exact photo for a car sales listing.
 
-FRAMING:
-- Keep the original framing/composition. Do NOT crop, zoom, rotate, or change aspect ratio.
+FRAMING (STRICT):
+- Keep the original framing/composition exactly the same.
+- Do NOT crop, zoom, rotate, or change aspect ratio.
 
 ABSOLUTE IMMUTABLE (DO NOT CHANGE):
 - Wheels/rims/spokes/tires/center caps/center-cap logos
@@ -81,16 +83,73 @@ def _fit_into_canvas_no_crop(img: Image.Image, canvas_bg: Image.Image, out_size:
     return bg
 
 
+def _edge_map(img: Image.Image, size=(256, 256)) -> np.ndarray:
+    """
+    Edge map for framing comparison, robust to color/exposure changes.
+    """
+    g = img.convert("L").resize(size, Image.LANCZOS)
+    e = g.filter(ImageFilter.FIND_EDGES)
+    arr = np.array(e, dtype=np.float32)
+    # normalize
+    arr -= arr.mean()
+    std = float(arr.std()) + 1e-6
+    arr /= std
+    return arr
+
+
+def _corrcoef(a: np.ndarray, b: np.ndarray) -> float:
+    """
+    Pearson correlation between two same-shaped arrays.
+    """
+    a = a.reshape(-1)
+    b = b.reshape(-1)
+    # both are already normalized, so corr is mean(a*b)
+    return float(np.mean(a * b))
+
+
+def _framing_gate(processed: Image.Image, ai_img: Image.Image) -> tuple[bool, dict]:
+    """
+    Returns (ok, info_dict)
+    Only rejects when AI changed framing (crop/zoom/shift/aspect).
+    """
+    pw, ph = processed.size
+    aw, ah = ai_img.size
+
+    # 1) Aspect ratio tolerance (log-space)
+    ar_p = pw / ph
+    ar_a = aw / ah
+    ar_delta = abs(math.log(ar_a / ar_p))  # 0 == identical
+    AR_TOL = 0.02  # ~2% tolerance
+
+    if ar_delta > AR_TOL:
+        return False, {"gate": "aspect_ratio", "ar_delta": ar_delta, "ar_tol": AR_TOL}
+
+    # 2) Edge-layout correlation (detect zoom/crop/shift)
+    p_edges = _edge_map(processed)
+    # Compare to AI resized to processed size (no crop)
+    ai_rs = ai_img.resize((pw, ph), Image.LANCZOS)
+    a_edges = _edge_map(ai_rs)
+
+    corr = _corrcoef(p_edges, a_edges)
+
+    # High threshold: we only want to reject obvious framing changes.
+    CORR_MIN = 0.86
+    if corr < CORR_MIN:
+        return False, {"gate": "edge_corr", "corr": corr, "corr_min": CORR_MIN}
+
+    return True, {"gate": "ok", "ar_delta": ar_delta, "corr": corr}
+
+
 @app.post("/enhance")
 async def enhance(file: UploadFile = File(...)):
     try:
         raw = await file.read()
         original_full = Image.open(io.BytesIO(raw)).convert("RGB")
 
-        # ✅ Final output will ALWAYS be same size as uploaded
+        # Final output must match uploaded dimensions exactly
         out_size = original_full.size
 
-        # Working copy for processing/AI to keep cost/time stable
+        # Working copy for processing/AI
         working = original_full.copy()
         MAX_WORK_DIM = 2560
         if max(working.size) > MAX_WORK_DIM:
@@ -100,23 +159,45 @@ async def enhance(file: UploadFile = File(...)):
         processed_np = enhance_image(working).astype(np.uint8)
         processed = Image.fromarray(processed_np, mode="RGB")
 
-        # Save for AI edit
+        # Save deterministic image for AI edit
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         tmp_path = tmp.name
         tmp.close()
         processed.save(tmp_path)
 
-        # ✅ AI edit (no diff gate; AI is always used)
+        # AI edit
         ai_img = _call_ai_edit(tmp_path)
 
-        # Return exact uploaded size, no crop
-        canvas_bg = original_full.resize(out_size, Image.LANCZOS)
-        final = _fit_into_canvas_no_crop(ai_img, canvas_bg, out_size)
+        # ✅ Framing-only gate (no pixel/quality/hallucination gate)
+        ok, info = _framing_gate(processed, ai_img)
 
+        canvas_bg = original_full.resize(out_size, Image.LANCZOS)
+
+        if not ok:
+            # Reject AI only when it changes framing
+            safe = _fit_into_canvas_no_crop(processed, canvas_bg, out_size)
+            return _return_png(
+                safe,
+                headers={
+                    "X-AI-USED": "false",
+                    "X-REASON": "framing_gate",
+                    "X-GATE": info.get("gate", ""),
+                    "X-AR-DELTA": str(info.get("ar_delta", "")),
+                    "X-CORR": str(info.get("corr", "")),
+                    "X-OUT-SIZE": f"{out_size[0]}x{out_size[1]}",
+                    "X-WORK-SIZE": f"{working.size[0]}x{working.size[1]}",
+                },
+            )
+
+        # Accept AI
+        final = _fit_into_canvas_no_crop(ai_img, canvas_bg, out_size)
         return _return_png(
             final,
             headers={
                 "X-AI-USED": "true",
+                "X-GATE": "ok",
+                "X-AR-DELTA": str(info.get("ar_delta", "")),
+                "X-CORR": str(info.get("corr", "")),
                 "X-OUT-SIZE": f"{out_size[0]}x{out_size[1]}",
                 "X-WORK-SIZE": f"{working.size[0]}x{working.size[1]}",
                 "X-AI-SIZE": f"{ai_img.size[0]}x{ai_img.size[1]}",
@@ -124,7 +205,6 @@ async def enhance(file: UploadFile = File(...)):
         )
 
     except Exception as e:
-        # ✅ No silent fallback. If OpenAI fails, you SEE it.
         return JSONResponse(
             status_code=500,
             content={"error": str(e), "trace": traceback.format_exc()},
