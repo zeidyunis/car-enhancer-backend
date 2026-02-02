@@ -146,7 +146,7 @@ async def enhance(file: UploadFile = File(...)):
         s = _score_similarity(processed, ai_img)
 
         # ✅ New sane threshold (your old scoring made 48 look “bad”)
-        SCORE_MAX = 60.0
+        SCORE_MAX = 22.0
 
         if s > SCORE_MAX:
             safe = _match_to_reference_no_crop(processed, reference=original)
