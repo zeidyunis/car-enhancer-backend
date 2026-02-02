@@ -73,7 +73,7 @@ async def enhance(file: UploadFile = File(...)):
 
         # EDIT via OpenAI (forces an *edit*, not a pure regeneration)
         result = client.images.edit(
-            model="gpt-image-1",
+            model="gpt-image-1.5",
             image=open(tmp_path, "rb"),
             prompt=PROMPT,
             size="auto",     # keep original aspect ratio
