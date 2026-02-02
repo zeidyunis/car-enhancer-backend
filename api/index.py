@@ -18,7 +18,7 @@ app = FastAPI()
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-MAIN_MODEL = os.getenv("MAIN_MODEL", "gpt-4.1")
+MAIN_MODEL = os.getenv("MAIN_MODEL", "gpt-5")
 MAX_PIXELS = int(os.getenv("MAX_PIXELS", str(4000 * 4000)))  # 16MP
 
 
