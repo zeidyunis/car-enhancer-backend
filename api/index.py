@@ -9,45 +9,54 @@ from PIL import Image, ImageOps
 from openai import OpenAI
 import openai
 
+
+# -----------------------
+# App + Client
+# -----------------------
+
 app = FastAPI()
 
-# Create client even if key is missing; we’ll validate on use.
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 MAIN_MODEL = os.getenv("MAIN_MODEL", "gpt-4.1")
 MAX_PIXELS = int(os.getenv("MAX_PIXELS", str(4000 * 4000)))  # 16MP
 
 
+# -----------------------
+# Prompt (Hard Lock)
+# -----------------------
+
 PROMPT = """
 You MUST edit the provided image. Do NOT generate a new image.
 
 FRAMING (STRICT):
 - Keep framing/composition identical (no crop/zoom/rotate).
-- Keep aspect ratio identical.
 
 DO NOT CHANGE (IMMUTABLE):
-- Wheels/rims/spokes/tires/center caps/center-cap logos
-- Badges/logos/emblems anywhere
-- Grille pattern/mesh/shape/texture
-- Headlights/taillights/DRL shapes and inner structure
-- Any text/numbers/icons/screens/buttons (must remain sharp and unwarped)
-- Body shape, panel lines, reflections geometry, tint level
-- Background objects/layout
-- Trim/materials: do NOT add chrome, do NOT change blacked-out trim, do NOT change matte↔gloss
+- Wheels, rims, center caps, logos, badges
+- Grille design
+- Headlights/taillights
+- Text, icons, screens
+- Body shape and reflections geometry
+- Trim (no chrome, no repaint)
 
-ALLOWED (GLOBAL ONLY):
-- Neutralize color cast / white balance
-- Slight exposure + contrast improvement (natural)
-- Mild highlight recovery, mild shadow lift
-- Very subtle sharpness/clarity (no halos)
-- Mild noise reduction only if needed
+ALLOWED ONLY:
+- Neutralize color cast
+- Slight exposure/contrast
+- Mild highlight recovery
+- Subtle sharpness
+- Mild noise reduction
 
 Photorealistic. Faithful to input.
 """.strip()
 
 
+# -----------------------
+# Global Error Handler
+# -----------------------
+
 @app.exception_handler(Exception)
-async def _catch_all(request: Request, exc: Exception):
+async def catch_all(request: Request, exc: Exception):
     return JSONResponse(
         status_code=500,
         content={
@@ -58,22 +67,30 @@ async def _catch_all(request: Request, exc: Exception):
     )
 
 
-def _load_image(data: bytes) -> Image.Image:
+# -----------------------
+# Helpers
+# -----------------------
+
+def load_image(data: bytes) -> Image.Image:
     im = Image.open(io.BytesIO(data))
     im = ImageOps.exif_transpose(im)
     return im.convert("RGB")
 
 
-def _downscale_if_needed(im: Image.Image) -> Image.Image:
+def downscale_if_needed(im: Image.Image) -> Image.Image:
     w, h = im.size
+
     if (w * h) <= MAX_PIXELS:
         return im
+
     scale = (MAX_PIXELS / float(w * h)) ** 0.5
-    nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+    nw = max(1, int(w * scale))
+    nh = max(1, int(h * scale))
+
     return im.resize((nw, nh), Image.Resampling.LANCZOS)
 
 
-def _pick_tool_size(w: int, h: int) -> str:
+def pick_tool_size(w: int, h: int) -> str:
     if w > h:
         return "1536x1024"
     if h > w:
@@ -81,17 +98,21 @@ def _pick_tool_size(w: int, h: int) -> str:
     return "1024x1024"
 
 
-def _to_data_url_png(im: Image.Image) -> str:
+def to_data_url(im: Image.Image) -> str:
     buf = io.BytesIO()
     im.save(buf, format="PNG")
-    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    b64 = base64.b64encode(buf.getvalue()).decode()
     return f"data:image/png;base64,{b64}"
 
 
-def _decode_b64_image(b64: str) -> Image.Image:
+def decode_image(b64: str) -> Image.Image:
     raw = base64.b64decode(b64)
     return Image.open(io.BytesIO(raw)).convert("RGB")
 
+
+# -----------------------
+# Debug Endpoints
+# -----------------------
 
 @app.get("/")
 def root():
@@ -103,33 +124,45 @@ def version():
     return {
         "openai_version": getattr(openai, "__version__", "unknown"),
         "has_client_responses": hasattr(client, "responses"),
-        "main_model": MAIN_MODEL,
+        "model": MAIN_MODEL,
         "has_api_key": bool(os.getenv("OPENAI_API_KEY")),
     }
 
 
+# -----------------------
+# Main Endpoint
+# -----------------------
+
 @app.post("/enhance")
 async def enhance(file: UploadFile = File(...)):
-    # hard fail with clear message if key missing
+
     if not os.getenv("OPENAI_API_KEY"):
-        raise HTTPException(status_code=500, detail="Missing OPENAI_API_KEY env var on Vercel.")
+        raise HTTPException(500, "Missing OPENAI_API_KEY")
 
     data = await file.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="Empty upload.")
 
-    original = _load_image(data)
+    if not data:
+        raise HTTPException(400, "Empty upload")
+
+    original = load_image(data)
+
     orig_w, orig_h = original.size
 
-    safe = _downscale_if_needed(original)
-    tool_size = _pick_tool_size(*safe.size)
-    image_url = _to_data_url_png(safe)
+    safe = downscale_if_needed(original)
+
+    tool_size = pick_tool_size(*safe.size)
+
+    image_url = to_data_url(safe)
 
     if not hasattr(client, "responses"):
         raise HTTPException(
-            status_code=500,
-            detail="OpenAI SDK too old on this deployment (no client.responses). Fix requirements.txt + redeploy with Clear Cache.",
+            500,
+            "OpenAI SDK too old (client.responses missing)"
         )
+
+    # -----------------------
+    # FORCE EDIT (Docs Method)
+    # -----------------------
 
     resp = client.responses.create(
         model=MAIN_MODEL,
@@ -153,12 +186,20 @@ async def enhance(file: UploadFile = File(...)):
         ],
     )
 
-    calls = [o for o in resp.output if getattr(o, "type", None) == "image_generation_call"]
-    if not calls:
-        raise HTTPException(status_code=500, detail="No image_generation_call returned.")
+    calls = [
+        o for o in resp.output
+        if getattr(o, "type", None) == "image_generation_call"
+    ]
 
-    edited = _decode_b64_image(calls[0].result)
-    edited = edited.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
+    if not calls:
+        raise HTTPException(500, "No image_generation_call returned")
+
+    edited = decode_image(calls[0].result)
+
+    edited = edited.resize(
+        (orig_w, orig_h),
+        Image.Resampling.LANCZOS
+    )
 
     out = io.BytesIO()
     edited.save(out, format="PNG")
