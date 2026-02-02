@@ -7,7 +7,7 @@ import traceback
 import numpy as np
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import Response, JSONResponse
-from PIL import Image, ImageFilter, ImageOps
+from PIL import Image, ImageOps
 from openai import OpenAI
 
 from api.utils.opencv_pipeline import enhance_image
@@ -48,60 +48,62 @@ No local retouching, no HDR/clarity look. Photorealistic.
 """.strip()
 
 
-def _guess_output_format(upload: UploadFile, pil_format: str | None) -> tuple[str, str]:
-    """
-    Returns: (PIL_format, mime_type)
-    We only serve JPEG or PNG to keep behavior predictable.
-    """
+ALLOWED_SIZES = [(1024, 1024), (1536, 1024), (1024, 1536)]  # w,h
+
+
+def _guess_output_format(upload: UploadFile, pil_format: str | None) -> tuple[str, str, str]:
     ct = (upload.content_type or "").lower()
     pf = (pil_format or "").upper()
-
-    # prefer explicit content-type
     if "png" in ct or pf == "PNG":
-        return "PNG", "image/png"
+        return "PNG", "image/png", "png"
     if "jpeg" in ct or "jpg" in ct or pf in ("JPEG", "JPG"):
-        return "JPEG", "image/jpeg"
-
-    # default for HEIC/HEIF/WEBP/etc.
-    return "JPEG", "image/jpeg"
+        return "JPEG", "image/jpeg", "jpg"
+    return "JPEG", "image/jpeg", "jpg"
 
 
-def _save_image_bytes(img: Image.Image, fmt: str) -> bytes:
+def _save_bytes(img: Image.Image, fmt: str) -> bytes:
     buf = io.BytesIO()
     if fmt == "PNG":
         img.save(buf, format="PNG", optimize=True)
     else:
-        # high quality, stable output (no matte)
         img.save(buf, format="JPEG", quality=92, subsampling=1, optimize=True)
     return buf.getvalue()
 
 
-def _fit_to_exact_canvas_no_crop(img: Image.Image, ref_canvas: Image.Image) -> Image.Image:
+def _choose_api_canvas(w: int, h: int) -> tuple[int, int]:
+    ar = w / h
+    if ar > 1.15:
+        return 1536, 1024
+    if ar < 0.87:
+        return 1024, 1536
+    return 1024, 1024
+
+
+def _pad_to_canvas(img: Image.Image, canvas_w: int, canvas_h: int) -> tuple[Image.Image, tuple[int, int, int, int]]:
     """
-    Force output to EXACT ref_canvas size with NO cropping.
-    If aspect differs, we pad/letterbox using a blurred reference background.
+    Fit original image into allowed API canvas WITHOUT cropping.
+    Returns:
+      - canvas image (RGB) of size (canvas_w, canvas_h)
+      - content box (left, top, right, bottom) where real pixels live
     """
-    out_w, out_h = ref_canvas.size
+    # resize to fit inside canvas
+    fitted = ImageOps.contain(img, (canvas_w, canvas_h), method=Image.LANCZOS)
 
-    # background = blurred original (same size)
-    bg = ref_canvas.copy().filter(ImageFilter.GaussianBlur(radius=18))
+    canvas = Image.new("RGB", (canvas_w, canvas_h), (18, 18, 18))  # dark neutral border
+    x = (canvas_w - fitted.size[0]) // 2
+    y = (canvas_h - fitted.size[1]) // 2
+    canvas.paste(fitted, (x, y))
 
-    # fit img inside without cropping
-    fitted = ImageOps.contain(img, (out_w, out_h), method=Image.LANCZOS)
-
-    x = (out_w - fitted.size[0]) // 2
-    y = (out_h - fitted.size[1]) // 2
-    bg.paste(fitted, (x, y))
-
-    return bg
+    box = (x, y, x + fitted.size[0], y + fitted.size[1])
+    return canvas, box
 
 
-def _call_ai_edit(tmp_path: str) -> Image.Image:
+def _call_ai_edit(tmp_path: str, size_str: str) -> Image.Image:
     result = client.images.edit(
-        model="gpt-image-1.5",
+        model="gpt-image-1",
         image=open(tmp_path, "rb"),
         prompt=PROMPT,
-        size="auto",
+        size=size_str,  # force one of allowed sizes; prevents "auto" surprises
     )
     out_bytes = base64.b64decode(result.data[0].b64_json)
     return Image.open(io.BytesIO(out_bytes)).convert("RGB")
@@ -112,51 +114,50 @@ async def enhance(file: UploadFile = File(...)):
     try:
         raw = await file.read()
 
-        # IMPORTANT: keep original orientation correct (iPhone EXIF)
         pil_in = Image.open(io.BytesIO(raw))
-        pil_in = ImageOps.exif_transpose(pil_in)
+        pil_in = ImageOps.exif_transpose(pil_in)  # iPhone rotation fix
         original_full = pil_in.convert("RGB")
 
-        # Lock final output size to EXACT uploaded size
-        out_size = original_full.size
+        orig_w, orig_h = original_full.size
+        out_fmt, out_mime, out_ext = _guess_output_format(file, pil_in.format)
 
-        # Decide output format based on upload
-        out_fmt, out_mime = _guess_output_format(file, pil_in.format)
+        # 1) pick API canvas size based on original orientation
+        canvas_w, canvas_h = _choose_api_canvas(orig_w, orig_h)
+        size_str = f"{canvas_w}x{canvas_h}"
 
-        # Working copy for deterministic + AI (cost control)
-        working = original_full.copy()
-        MAX_WORK_DIM = 2560
-        if max(working.size) > MAX_WORK_DIM:
-            working.thumbnail((MAX_WORK_DIM, MAX_WORK_DIM), Image.LANCZOS)
+        # 2) pad to canvas (no crop), keep box of real content
+        canvas_img, box = _pad_to_canvas(original_full, canvas_w, canvas_h)
 
-        # Deterministic step
-        processed_np = enhance_image(working).astype(np.uint8)
-        processed = Image.fromarray(processed_np, mode="RGB")
+        # 3) deterministic on canvas (so the AI sees same canvas)
+        det_np = enhance_image(canvas_img).astype(np.uint8)
+        det_img = Image.fromarray(det_np, mode="RGB")
 
-        # AI edits the deterministic image (force edit workflow)
+        # 4) AI edit on deterministic canvas (forced size)
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         tmp_path = tmp.name
         tmp.close()
-        processed.save(tmp_path)
+        det_img.save(tmp_path)
 
-        ai_img = _call_ai_edit(tmp_path)
+        ai_canvas = _call_ai_edit(tmp_path, size_str=size_str)
 
-        # NOW: force AI output back onto exact original canvas (no crop)
-        ref_canvas = original_full.resize(out_size, Image.LANCZOS)
-        final = _fit_to_exact_canvas_no_crop(ai_img, ref_canvas)
+        # 5) crop back to ONLY real content (removes borders)
+        ai_cropped = ai_canvas.crop(box)
 
-        body = _save_image_bytes(final, out_fmt)
+        # 6) resize back to original uploaded size (exact)
+        final = ai_cropped.resize((orig_w, orig_h), Image.LANCZOS)
+
+        body = _save_bytes(final, out_fmt)
 
         return Response(
             content=body,
             media_type=out_mime,
             headers={
                 "X-AI-USED": "true",
-                "X-OUT-SIZE": f"{out_size[0]}x{out_size[1]}",
+                "X-ORIG": f"{orig_w}x{orig_h}",
+                "X-API-CANVAS": size_str,
+                "X-BOX": f"{box[0]},{box[1]},{box[2]},{box[3]}",
                 "X-OUT-FORMAT": out_fmt,
-                "X-WORK-SIZE": f"{working.size[0]}x{working.size[1]}",
-                # inline prevents “download python file” weirdness in browsers
-                "Content-Disposition": f'inline; filename="enhanced.{out_fmt.lower() if out_fmt != "JPEG" else "jpg"}"',
+                "Content-Disposition": f'inline; filename="enhanced.{out_ext}"',
             },
         )
 
