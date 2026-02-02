@@ -1,7 +1,4 @@
-fastapi
-uvicorn
-python-multipart
-pillow
-numpy
-openai
-python-dotenv
+fastapi==0.115.6
+python-multipart==0.0.12
+pillow==10.4.0
+openai==1.63.2
