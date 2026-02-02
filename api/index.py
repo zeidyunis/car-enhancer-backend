@@ -12,7 +12,7 @@ client = OpenAI()
 
 # Main “controller” model for Responses API (NOT the image model).
 # Docs show gpt-4.1 works with image_generation tool. :contentReference[oaicite:3]{index=3}
-MAIN_MODEL = os.getenv("MAIN_MODEL", "gpt-4.1")
+MAIN_MODEL = os.getenv("MAIN_MODEL", "gpt-5")
 
 # Hard cap to protect your Vercel function time/memory.
 # (Vercel also has request body limits; huge uploads may 413 before reaching code.)
