@@ -3,13 +3,15 @@ import io
 import os
 import traceback
 
-from fastapi import FastAPI, File, UploadFile, Response, HTTPException
+from fastapi import FastAPI, File, UploadFile, Response, HTTPException, Request
+from fastapi.responses import JSONResponse
 from PIL import Image, ImageOps
 from openai import OpenAI
 import openai
 
 app = FastAPI()
 
+# Create client even if key is missing; we’ll validate on use.
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 MAIN_MODEL = os.getenv("MAIN_MODEL", "gpt-4.1")
@@ -44,13 +46,22 @@ Photorealistic. Faithful to input.
 """.strip()
 
 
+@app.exception_handler(Exception)
+async def _catch_all(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": str(exc),
+            "trace": traceback.format_exc(),
+            "path": str(request.url),
+        },
+    )
+
+
 def _load_image(data: bytes) -> Image.Image:
-    try:
-        im = Image.open(io.BytesIO(data))
-        im = ImageOps.exif_transpose(im)  # iPhone orientation fix
-        return im.convert("RGB")
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid image upload.")
+    im = Image.open(io.BytesIO(data))
+    im = ImageOps.exif_transpose(im)
+    return im.convert("RGB")
 
 
 def _downscale_if_needed(im: Image.Image) -> Image.Image:
@@ -63,7 +74,6 @@ def _downscale_if_needed(im: Image.Image) -> Image.Image:
 
 
 def _pick_tool_size(w: int, h: int) -> str:
-    # OpenAI image tool sizes (safe presets)
     if w > h:
         return "1536x1024"
     if h > w:
@@ -94,79 +104,72 @@ def version():
         "openai_version": getattr(openai, "__version__", "unknown"),
         "has_client_responses": hasattr(client, "responses"),
         "main_model": MAIN_MODEL,
+        "has_api_key": bool(os.getenv("OPENAI_API_KEY")),
     }
 
 
 @app.post("/enhance")
 async def enhance(file: UploadFile = File(...)):
-    try:
-        data = await file.read()
-        if not data:
-            raise HTTPException(status_code=400, detail="Empty upload.")
+    # hard fail with clear message if key missing
+    if not os.getenv("OPENAI_API_KEY"):
+        raise HTTPException(status_code=500, detail="Missing OPENAI_API_KEY env var on Vercel.")
 
-        original = _load_image(data)
-        orig_w, orig_h = original.size
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty upload.")
 
-        safe = _downscale_if_needed(original)
-        tool_size = _pick_tool_size(*safe.size)
-        image_url = _to_data_url_png(safe)
+    original = _load_image(data)
+    orig_w, orig_h = original.size
 
-        # If false, deps are wrong on Vercel
-        if not hasattr(client, "responses"):
-            raise HTTPException(
-                status_code=500,
-                detail="OpenAI SDK too old on this deployment (no client.responses). Ensure requirements.txt is at repo root and redeploy with Clear Cache.",
-            )
+    safe = _downscale_if_needed(original)
+    tool_size = _pick_tool_size(*safe.size)
+    image_url = _to_data_url_png(safe)
 
-        # FORCE EDIT: action="edit" + image in context
-        resp = client.responses.create(
-            model=MAIN_MODEL,
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": PROMPT},
-                        {"type": "input_image", "image_url": image_url},
-                    ],
-                }
-            ],
-            tools=[
-                {
-                    "type": "image_generation",
-                    "action": "edit",
-                    "input_fidelity": "high",
-                    "size": tool_size,
-                    "quality": "high",
-                }
-            ],
+    if not hasattr(client, "responses"):
+        raise HTTPException(
+            status_code=500,
+            detail="OpenAI SDK too old on this deployment (no client.responses). Fix requirements.txt + redeploy with Clear Cache.",
         )
 
-        calls = [o for o in resp.output if getattr(o, "type", None) == "image_generation_call"]
-        if not calls:
-            raise HTTPException(status_code=500, detail="No image_generation_call returned.")
+    resp = client.responses.create(
+        model=MAIN_MODEL,
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": PROMPT},
+                    {"type": "input_image", "image_url": image_url},
+                ],
+            }
+        ],
+        tools=[
+            {
+                "type": "image_generation",
+                "action": "edit",
+                "input_fidelity": "high",
+                "size": tool_size,
+                "quality": "high",
+            }
+        ],
+    )
 
-        call0 = calls[0]
-        edited = _decode_b64_image(call0.result)
+    calls = [o for o in resp.output if getattr(o, "type", None) == "image_generation_call"]
+    if not calls:
+        raise HTTPException(status_code=500, detail="No image_generation_call returned.")
 
-        # back to exact original size
-        edited = edited.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
+    edited = _decode_b64_image(calls[0].result)
+    edited = edited.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
 
-        out = io.BytesIO()
-        edited.save(out, format="PNG")
+    out = io.BytesIO()
+    edited.save(out, format="PNG")
 
-        return Response(
-            content=out.getvalue(),
-            media_type="image/png",
-            headers={
-                "x-ai-used": "true",
-                "x-action": str(getattr(call0, "action", "unknown")),
-                "x-orig-size": f"{orig_w}x{orig_h}",
-                "x-tool-size": tool_size,
-                "cache-control": "no-store",
-            },
-        )
-
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{str(e)}\n{traceback.format_exc()}")
+    return Response(
+        content=out.getvalue(),
+        media_type="image/png",
+        headers={
+            "x-ai-used": "true",
+            "x-orig-size": f"{orig_w}x{orig_h}",
+            "x-tool-size": tool_size,
+            "cache-control": "no-store",
+        },
+    )
