@@ -9,39 +9,45 @@ from openai import OpenAI
 import openai
 
 app = FastAPI()
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 MAIN_MODEL = os.getenv("MAIN_MODEL", "gpt-4.1")
-MAX_PIXELS = int(os.getenv("MAX_PIXELS", str(4000 * 4000)))  # 16MP cap
+MAX_PIXELS = int(os.getenv("MAX_PIXELS", str(4000 * 4000)))  # 16MP
 
 
 PROMPT = """
-You are editing an existing photo. FORCE EDIT MODE.
-Do NOT generate a new image.
+You MUST edit the provided image. Do NOT generate a new image.
 
-ABSOLUTE IMMUTABLE (DO NOT CHANGE):
+FRAMING (STRICT):
+- Keep framing/composition identical (no crop/zoom/rotate).
+- Keep aspect ratio identical.
+
+DO NOT CHANGE (IMMUTABLE):
 - Wheels/rims/spokes/tires/center caps/center-cap logos
-- Badges/logos anywhere
+- Badges/logos/emblems anywhere
 - Grille pattern/mesh/shape/texture
-- Headlights/taillights/DRL shapes and internal patterns
-- Any text/numbers/icons/screens/buttons
-- Body shape, reflections structure, background objects/layout
-- Materials/trim: do NOT add chrome/gloss; do NOT brighten blacked-out trim; do NOT change matte↔gloss
+- Headlights/taillights/DRL shapes and inner structure
+- Any text/numbers/icons/screens/buttons (must remain sharp and unwarped)
+- Body shape, panel lines, reflections geometry, tint level
+- Background objects/layout
+- Trim/materials: do NOT add chrome, do NOT change blacked-out trim, do NOT change matte↔gloss
 
 ALLOWED (GLOBAL ONLY):
-- Correct white balance / remove cast
-- Small exposure + contrast improvement (natural)
+- Neutralize color cast / white balance
+- Slight exposure + contrast improvement (natural)
 - Mild highlight recovery, mild shadow lift
-- Mild noise reduction only if needed (do not smear texture)
+- Very subtle sharpness/clarity (no halos)
+- Mild noise reduction only if needed
 
-Keep framing/composition the same (no crop/zoom/rotate). Photorealistic.
+Photorealistic. Faithful to input.
 """.strip()
 
 
 def _load_image(data: bytes) -> Image.Image:
     try:
         im = Image.open(io.BytesIO(data))
-        im = ImageOps.exif_transpose(im)  # iPhone orientation
+        im = ImageOps.exif_transpose(im)  # iPhone orientation fix
         return im.convert("RGB")
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid image upload.")
@@ -57,7 +63,7 @@ def _downscale_if_needed(im: Image.Image) -> Image.Image:
 
 
 def _pick_tool_size(w: int, h: int) -> str:
-    # allowed sizes per image tool behavior
+    # OpenAI image tool sizes (safe presets)
     if w > h:
         return "1536x1024"
     if h > w:
@@ -105,14 +111,14 @@ async def enhance(file: UploadFile = File(...)):
         tool_size = _pick_tool_size(*safe.size)
         image_url = _to_data_url_png(safe)
 
-        # If this is false on Vercel, your deps are not pinned/installed correctly.
+        # If false, deps are wrong on Vercel
         if not hasattr(client, "responses"):
             raise HTTPException(
                 status_code=500,
-                detail="OpenAI SDK too old on this deployment (no client.responses). Fix requirements.txt + redeploy with Clear Cache.",
+                detail="OpenAI SDK too old on this deployment (no client.responses). Ensure requirements.txt is at repo root and redeploy with Clear Cache.",
             )
 
-        # FORCE EDIT: action="edit" AND an image in context
+        # FORCE EDIT: action="edit" + image in context
         resp = client.responses.create(
             model=MAIN_MODEL,
             input=[
@@ -142,7 +148,7 @@ async def enhance(file: UploadFile = File(...)):
         call0 = calls[0]
         edited = _decode_b64_image(call0.result)
 
-        # keep same uploaded size
+        # back to exact original size
         edited = edited.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
 
         out = io.BytesIO()
