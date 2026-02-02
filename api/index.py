@@ -100,7 +100,7 @@ def _pad_to_canvas(img: Image.Image, canvas_w: int, canvas_h: int) -> tuple[Imag
 
 def _call_ai_edit(tmp_path: str, size_str: str) -> Image.Image:
     result = client.images.edit(
-        model="gpt-image-1",
+        model="gpt-image-1.5",
         image=open(tmp_path, "rb"),
         prompt=PROMPT,
         size=size_str,  # force one of allowed sizes; prevents "auto" surprises
