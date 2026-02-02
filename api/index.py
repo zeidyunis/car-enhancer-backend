@@ -133,7 +133,7 @@ def _framing_gate(processed: Image.Image, ai_img: Image.Image) -> tuple[bool, di
     corr = _corrcoef(p_edges, a_edges)
 
     # High threshold: we only want to reject obvious framing changes.
-    CORR_MIN = 0.86
+    CORR_MIN = 0.80
     if corr < CORR_MIN:
         return False, {"gate": "edge_corr", "corr": corr, "corr_min": CORR_MIN}
 
