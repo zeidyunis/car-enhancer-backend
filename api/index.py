@@ -115,7 +115,7 @@ def _call_ai_edit(det_path: str, orig_path: str, size_str: str) -> Image.Image:
     client = _client()
     with open(det_path, "rb") as f_det, open(orig_path, "rb") as f_orig:
         result = client.images.edit(
-            model="gpt-image-1.5",
+            model="chatgpt-image-latest",
             image=[f_det, f_orig],
             prompt=PROMPT,
             size=size_str,
