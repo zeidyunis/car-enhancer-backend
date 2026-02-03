@@ -98,7 +98,7 @@ def _call_ai_edit(base_path: str, size_str: str) -> Image.Image:
             image=f0,
             prompt=PROMPT,
             size=size_str,
-            quality="high",
+            quality="medium",
             output_format="jpeg",
         )
     out_bytes = base64.b64decode(result.data[0].b64_json)
