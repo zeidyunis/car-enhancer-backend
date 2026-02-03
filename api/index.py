@@ -97,14 +97,16 @@ def _write_temp_png(pil_img: Image.Image) -> str:
 
 def _call_ai_edit(base_path: str, size_str: str) -> Image.Image:
     client = _client()
-    with open(base_path, "rb") as f0:
-        result = client.images.edit(
-            model="gpt-image-1.5",
-            image=f0,
-            prompt=PROMPT,
-            size=size_str,
-            quality="high",
-            output_format="jpeg",
+    with open(det_path, "rb") as f_det, open(orig_path, "rb") as f_orig:
+    result = client.images.edit(
+        model="gpt-image-1.5",
+        image=[f_det, f_orig],
+        prompt=PROMPT,
+        size=size_str,
+        quality="high",
+        output_format="png",
+    )
+
         )
     out_bytes = base64.b64decode(result.data[0].b64_json)
     return Image.open(io.BytesIO(out_bytes)).convert("RGB")
