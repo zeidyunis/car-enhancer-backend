@@ -35,6 +35,9 @@ ABSOLUTE IMMUTABLE (DO NOT CHANGE):
 - Do not add/remove objects
 - Do NOT reinterpret edges, patterns, or textures.
 - Preserve all geometry exactly.
+- Do NOT add features that are not present (e.g., headlight washers, sensors, vents, badges, chrome accents).
+- If a feature is not visible in the original, it must remain absent.
+- Do not “upgrade” the car trim/package.
 
 EDITS MUST BE GLOBAL ONLY.
 Lens distortion: subtle global de-warp only if needed.
