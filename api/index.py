@@ -176,7 +176,7 @@ def _call_ai_edit(det_path: str, orig_path: str, size_str: str, out_fmt: str) ->
     api_out_fmt = "png" if out_fmt == "PNG" else "jpeg"
 
     # Use conservative quality by default; you can override via env
-    quality = os.getenv("AI_QUALITY", "low")  # low|medium|high|auto
+    quality = os.getenv("AI_QUALITY", "medium")  # low|medium|high|auto
     compression = int(os.getenv("AI_OUTPUT_COMPRESSION", "95"))  # 0-100
     fidelity = os.getenv("AI_INPUT_FIDELITY", "high")  # for gpt-image-1: low|high
 
@@ -264,7 +264,7 @@ async def enhance(file: UploadFile = File(...)):
         edge_sim = _edge_similarity(ai_final, det_final)
 
         # Threshold: higher is stricter. Start at 0.965 and tune.
-        MIN_EDGE_SIM = float(os.getenv("MIN_EDGE_SIM", "0.965"))
+        MIN_EDGE_SIM = float(os.getenv("MIN_EDGE_SIM", "0.92"))
 
         if edge_sim < MIN_EDGE_SIM:
             final = det_final
