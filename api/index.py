@@ -33,6 +33,8 @@ ABSOLUTE IMMUTABLE (DO NOT CHANGE):
 - Headlight/taillight shapes and internal patterns
 - Body shape, reflections structure, background layout
 - Do not add/remove objects
+- Do NOT reinterpret edges, patterns, or textures.
+- Preserve all geometry exactly.
 
 EDITS MUST BE GLOBAL ONLY.
 Lens distortion: subtle global de-warp only if needed.
