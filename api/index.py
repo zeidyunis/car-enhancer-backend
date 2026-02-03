@@ -95,19 +95,24 @@ def _choose_api_canvas(w: int, h: int) -> tuple[int, int]:
     return 1024, 1024
 
 
-def _pad_to_canvas(img: Image.Image, canvas_w: int, canvas_h: int) -> tuple[Image.Image, tuple[int, int, int, int]]:
-    """
-    Fit original image into allowed API canvas WITHOUT cropping.
-    Returns:
-      - canvas image (RGB) of size (canvas_w, canvas_h)
-      - content box (left, top, right, bottom) where real pixels live
-    """
-    fitted = ImageOps.pad(img, (canvas_w, canvas_h), method=Image.LANCZOS, color=(18,18,18))
-    canvas = Image.new("RGB", (canvas_w, canvas_h), (18, 18, 18))  # dark neutral border
-    x = (canvas_w - fitted.size[0]) // 2
-    y = (canvas_h - fitted.size[1]) // 2
+def _pad_to_canvas(img: Image.Image, canvas_w: int, canvas_h: int):
+    # Resize by longest side only (no distortion)
+    w, h = img.size
+    scale = min(canvas_w / w, canvas_h / h)
+
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+
+    fitted = img.resize((new_w, new_h), Image.LANCZOS)
+
+    canvas = Image.new("RGB", (canvas_w, canvas_h), (18, 18, 18))
+
+    x = (canvas_w - new_w) // 2
+    y = (canvas_h - new_h) // 2
+
     canvas.paste(fitted, (x, y))
-    box = (x, y, x + fitted.size[0], y + fitted.size[1])
+
+    box = (x, y, x + new_w, y + new_h)
     return canvas, box
 
 
