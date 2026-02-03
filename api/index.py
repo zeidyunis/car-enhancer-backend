@@ -17,30 +17,33 @@ app = FastAPI()
 
 
 PROMPT = """
-You are doing in-place photographic retouching.
+Edit (not recreate) this exact photo for a premium car sales listing.
 
-Do NOT:
-- redraw
-- relight
-- add shadows
-- change reflections
-- modify geometry
-- hallucinate details
+GOAL LOOK:
+- Neutralize fluorescent/garage color cast (cleaner whites, more neutral).
+- Deeper blacks + better midtone contrast with a gentle S-curve (premium, punchy).
+- Recover highlights and lift shadows slightly (still natural).
+- Add realistic micro-contrast/clarity and clean sharpening (no halos, no HDR).
 
-Only:
-- correct color cast
-- adjust tone
-- improve clarity
-- reduce noise
-- sharpen slightly
+FRAMING (STRICT):
+- Keep the original framing/composition exactly the same.
+- Do NOT crop, zoom, rotate, or change aspect ratio.
 
-Preserve pixel structure.
-Preserve lighting.
-Preserve reflections.
-Preserve shadows.
+ABSOLUTE IMMUTABLE (DO NOT CHANGE):
+- Wheels/rims/tires/center caps/logos
+- Badges/logos/text/plates
+- Headlight/taillight shapes and internal patterns
+- Body shape, reflections structure, background layout
+- Do not add/remove objects
+- Do NOT reinterpret or redraw edges, patterns, or textures. Preserve all geometry exactly.
+- Do NOT add features that are not present (e.g., headlight washers, sensors, vents, badges, chrome accents).
+- If a feature is not visible in the original, it must remain absent.
+- Do not “upgrade” the car trim/package.
 
+EDITS MUST BE GLOBAL ONLY (uniform across whole image).
+Lens distortion: subtle global de-warp only if needed.
+Photorealistic. High quality.
 """.strip()
-
 
 def _client() -> OpenAI:
     key = os.getenv("OPENAI_API_KEY")
