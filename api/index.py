@@ -264,7 +264,7 @@ async def enhance(file: UploadFile = File(...)):
         edge_sim = _edge_similarity(ai_final, det_final)
 
         # Threshold: higher is stricter. Start at 0.965 and tune.
-        MIN_EDGE_SIM = float(os.getenv("MIN_EDGE_SIM", "0.92"))
+        MIN_EDGE_SIM = float(os.getenv("MIN_EDGE_SIM", "0.88"))
 
         if edge_sim < MIN_EDGE_SIM:
             final = det_final
