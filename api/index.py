@@ -99,7 +99,7 @@ def _pad_to_canvas(img: Image.Image, canvas_w: int, canvas_h: int) -> tuple[Imag
       - canvas image (RGB) of size (canvas_w, canvas_h)
       - content box (left, top, right, bottom) where real pixels live
     """
-    fitted = ImageOps.contain(img, (canvas_w, canvas_h), method=Image.LANCZOS)
+    fitted = ImageOps.pad(img, (canvas_w, canvas_h), method=Image.LANCZOS, color=(18,18,18))
     canvas = Image.new("RGB", (canvas_w, canvas_h), (18, 18, 18))  # dark neutral border
     x = (canvas_w - fitted.size[0]) // 2
     y = (canvas_h - fitted.size[1]) // 2
