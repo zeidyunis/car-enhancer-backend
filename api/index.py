@@ -29,6 +29,13 @@ FRAMING (STRICT):
 - Keep the original framing/composition exactly the same.
 - Do NOT crop, zoom, rotate, or change aspect ratio.
 
+LENS DISTORTION (AI, GLOBAL ONLY):
+- Apply a single, subtle global lens distortion correction (de-warp) to make straight lines straight.
+- Do NOT change any objects. This is a geometric transform only.
+- No perspective change beyond what is necessary for lens de-warp.
+- Keep car proportions identical. Do not “re-draw” edges.
+- If lens distortion is minimal, do almost nothing.
+
 ABSOLUTE IMMUTABLE (DO NOT CHANGE):
 - Wheels/rims/spokes/tires/center caps/center-cap logos
 - Badges/logos anywhere
@@ -43,6 +50,7 @@ ALLOWED (GLOBAL ONLY — must apply uniformly to the whole image, not locally):
 - Small exposure + contrast improvement (natural)
 - Mild highlight recovery, mild shadow lift
 - Mild noise reduction only if needed (do not smear texture)
+- Subtle global lens distortion correction only (if needed)
 
 BANNED:
 - No object edits, no additions, no removals, no “improvements” that change details.
