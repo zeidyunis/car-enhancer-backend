@@ -170,7 +170,7 @@ def _call_ai_edit(det_path: str, orig_path: str, size_str: str, out_fmt: str) ->
     """
     Use /v1/images/edits with strong input anchoring:
     - multiple images (deterministic + original) to anchor
-    - gpt-image-1 with input_fidelity="high"
+    - gpt-image-1.5 with input_fidelity="high"
     - explicit quality + output_format + output_compression
     """
     api_out_fmt = "png" if out_fmt == "PNG" else "jpeg"
