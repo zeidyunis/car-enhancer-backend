@@ -176,7 +176,7 @@ def _call_ai_edit(det_path: str, orig_path: str, size_str: str, out_fmt: str) ->
     api_out_fmt = "png" if out_fmt == "PNG" else "jpeg"
 
     # Use conservative quality by default; you can override via env
-    quality = os.getenv("AI_QUALITY", "high")  # low|medium|high|auto
+    quality = os.getenv("AI_QUALITY", "medium")  # low|medium|high|auto
     compression = int(os.getenv("AI_OUTPUT_COMPRESSION", "95"))  # 0-100
     fidelity = os.getenv("AI_INPUT_FIDELITY", "high")  # for gpt-image-1: low|high
 
