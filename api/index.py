@@ -51,6 +51,9 @@ ALLOWED (GLOBAL ONLY — must apply uniformly to the whole image, not locally):
 - Mild highlight recovery, mild shadow lift
 - Mild noise reduction only if needed (do not smear texture)
 - Subtle global lens distortion correction only (if needed)
+- Slight vibrance increase (prefer vibrance over saturation)
+- Gentle S-curve: deepen blacks slightly + protect highlights
+- Slight midtone contrast for clarity (no HDR look)
 
 BANNED:
 - No object edits, no additions, no removals, no “improvements” that change details.
