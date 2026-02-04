@@ -208,7 +208,7 @@ def health():
 @app.post("/enhance")
 async def enhance(
     file: UploadFile = File(...),
-    strength: float = Form(0.55),
+    strength: float = Form(0.35),
 ):
     tmp_paths: list[str] = []
     try:
