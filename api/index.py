@@ -6,6 +6,7 @@ import traceback
 
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, Form
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response, JSONResponse
 from PIL import Image, ImageOps
 from openai import OpenAI
@@ -14,6 +15,16 @@ from api.utils.opencv_pipeline import enhance_image
 
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://be57ce02-6783-4807-a967-7ede7043ec97.lovableproject.com",
+    ],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 PROMPT = """
