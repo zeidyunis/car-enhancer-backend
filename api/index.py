@@ -41,10 +41,10 @@ FRAMING (STRICT):
 - Do NOT crop, zoom, rotate, or change aspect ratio.
 
 ABSOLUTE IMMUTABLE (DO NOT CHANGE):
-- Wheels/rims/tires/center caps/logos
-- Badges/logos/text/plates
-- Headlight/taillight shapes and internal patterns
-- Body shape, reflections structure, background layout
+- DO NOT CHANGE Wheels/rims/tires/center caps/logos
+- DO NOT CHANGE Badges/logos/text/plates
+- DO NOT CHANGE eadlight/taillight shapes and internal patterns
+- DO NOT CHANGE Body shape, reflections structure, background layout
 - Do not add/remove objects
 - Do NOT reinterpret or redraw edges, patterns, or textures. Preserve all geometry exactly.
 - Do NOT add features that are not present (e.g., headlight washers, sensors, vents, badges, chrome accents).
