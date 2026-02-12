@@ -46,6 +46,7 @@ ABSOLUTE IMMUTABLE (DO NOT CHANGE):
 - DO NOT CHANGE Headlight/taillight shapes and internal patterns
 - DO NOT CHANGE Body shape, reflections structure, background layout
 - DO NOT ADD FOGLIGHTS OR OTHER LIGHTING FEATURES WHERE THERE ARE NONE IN THE ORIGINAL IMAGE
+- DO NOT REMOVE amber lights in the headlights if they are present
 - Do not add/remove objects
 - Do NOT reinterpret or redraw edges, patterns, or textures. Preserve all geometry exactly.
 - Do NOT add features that are not present (e.g., headlight washers, sensors, vents, badges, chrome accents).
