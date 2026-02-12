@@ -8,13 +8,11 @@ import numpy as np
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response, JSONResponse
-from PIL import Image, ImageOps, ImageFilter
+from PIL import Image, ImageOps
 from openai import OpenAI
 
 from api.utils.opencv_pipeline import enhance_image
 
-
-APP_VERSION = "simple-retouch-v3-1024bias"
 
 app = FastAPI()
 
@@ -22,51 +20,47 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://be57ce02-6783-4807-a967-7ede7043ec97.lovableproject.com",
-        "https://id-preview--be57ce02-6783-4807-a967-7ede7043ec97.lovable.app",
     ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Short, retouch-only. Removed "noise cleanup" (can trigger repainting).
-# Added "Lightroom-like global adjustments only; no local edits".
+
 PROMPT = """
-Retouch this exact photo (do not recreate it).
+Edit (not recreate) this exact photo for a premium car sales listing.
 
-ALLOWED (GLOBAL ONLY):
-- Correct white balance / color cast (neutral, natural)
-- Small exposure + contrast adjustment (gentle S-curve)
-- Mild highlight recovery + mild shadow lift
+GOAL LOOK:
+- Neutralize fluorescent/garage color cast (cleaner whites, more neutral).
+- Deeper blacks + better midtone contrast with a gentle S-curve (premium, punchy).
+- Recover highlights and lift shadows slightly (still natural).
+- Add realistic micro-contrast/clarity and mild sharpening (no halos, no HDR).
 
-STRICTLY FORBIDDEN (DO NOT CHANGE ANY OF THIS):
-- wheels/rims/tires/center caps/logos
-- headlights/taillights/amber markers/reflectors and internal patterns
-- badges/text/plates
-- grille/bumper/trim/sensors/vents/washers
-- body shape, panel gaps, reflections structure
-- background objects/layout
-- do not add/remove anything
-- do not redraw edges or textures
+FRAMING (STRICT):
+- Keep the original framing/composition exactly the same.
+- Do NOT crop, zoom, rotate, or change aspect ratio.
 
-FRAMING:
-- Do not crop, zoom, rotate, or change aspect ratio.
+ABSOLUTE IMMUTABLE (DO NOT CHANGE):
+- DO NOT CHANGE Wheels/rims/tires/center caps/logos
+- DO NOT CHANGE Badges/logos/text/plates
+- DO NOT CHANGE Headlight/taillight shapes and internal patterns
+- DO NOT CHANGE Body shape, reflections structure, background layout
+- Do not add/remove objects
+- Do NOT reinterpret or redraw edges, patterns, or textures. Preserve all geometry exactly.
+- Do NOT add features that are not present (e.g., headlight washers, sensors, vents, badges, chrome accents).
+- If a feature is not visible in the original, it must remain absent.
+- Do not “upgrade” the car trim/package.
 
-IMPORTANT:
-- Apply only global color and tone adjustments (like Lightroom).
-- No local edits. No retouching of specific areas.
+EDITS MUST BE GLOBAL ONLY (uniform across whole image).
+Lens distortion: subtle global de-warp only if needed.
+Photorealistic. High quality.
 """.strip()
-
 
 def _client() -> OpenAI:
     key = os.getenv("OPENAI_API_KEY")
     if not key:
         raise RuntimeError("OPENAI_API_KEY is not set")
     return OpenAI(api_key=key)
-
-
-def _clamp(x: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, x))
 
 
 def _save_bytes(img: Image.Image, fmt: str) -> bytes:
@@ -89,48 +83,29 @@ def _guess_out_fmt(upload: UploadFile, pil_format: str | None) -> tuple[str, str
 
 
 def _choose_api_canvas(w: int, h: int) -> tuple[int, int]:
-    """
-    Prefer 1024-based canvases for stability (less "reconstruction" drift than 1536-wide).
-    We bias by ordering options so 1024 canvases win ties.
-    """
+    # Choose closest supported canvas by aspect ratio (min letterbox/weirdness)
     target = w / h
-    options = [(1024, 1024), (1024, 1536), (1536, 1024)]
+    options = [(1024, 1024), (1536, 1024), (1024, 1536)]
     return min(options, key=lambda wh: abs((wh[0] / wh[1]) - target))
 
 
-def _pad_to_canvas_blur_fill(img: Image.Image, canvas_w: int, canvas_h: int):
-    """
-    Letterbox WITHOUT dark borders.
-    Dark borders often make the model "re-render" edges/details.
-    Uses blurred, edge-extended background.
-    """
+def _pad_to_canvas_no_distort(img: Image.Image, canvas_w: int, canvas_h: int):
+    # Letterbox without distortion, no crop.
     img = img.convert("RGB")
     w, h = img.size
-
-    # Fit foreground inside canvas
     scale = min(canvas_w / w, canvas_h / h)
     new_w = max(1, int(w * scale))
     new_h = max(1, int(h * scale))
+
     fitted = img.resize((new_w, new_h), Image.LANCZOS)
 
-    # Background: cover canvas then blur
-    cover_scale = max(canvas_w / w, canvas_h / h)
-    cover_w = max(1, int(w * cover_scale))
-    cover_h = max(1, int(h * cover_scale))
-    bg = img.resize((cover_w, cover_h), Image.LANCZOS)
-
-    bx = (cover_w - canvas_w) // 2
-    by = (cover_h - canvas_h) // 2
-    bg = bg.crop((bx, by, bx + canvas_w, by + canvas_h))
-    bg = bg.filter(ImageFilter.GaussianBlur(radius=18))
-
-    # Paste fitted over background
+    canvas = Image.new("RGB", (canvas_w, canvas_h), (18, 18, 18))
     x = (canvas_w - new_w) // 2
     y = (canvas_h - new_h) // 2
-    bg.paste(fitted, (x, y))
+    canvas.paste(fitted, (x, y))
 
     box = (x, y, x + new_w, y + new_h)
-    return bg, box
+    return canvas, box
 
 
 def _write_temp_png(pil_img: Image.Image) -> str:
@@ -143,9 +118,9 @@ def _write_temp_png(pil_img: Image.Image) -> str:
 
 def _call_ai_edit(det_path: str, orig_path: str, size_str: str) -> Image.Image:
     """
-    Two-image anchoring:
-      image[0] = deterministic graded image (target look)
-      image[1] = original canvas (must be preserved)
+    Two-image anchoring to reduce hallucinations:
+      image[0] = deterministic graded image (what we want)
+      image[1] = original canvas (what must be preserved)
     """
     client = _client()
     with open(det_path, "rb") as f_det, open(orig_path, "rb") as f_orig:
@@ -163,6 +138,7 @@ def _call_ai_edit(det_path: str, orig_path: str, size_str: str) -> Image.Image:
 
 @app.get("/")
 def home():
+    # Webpage so visiting the Vercel link doesn't "download"
     return HTMLResponse(
         """
 <!doctype html>
@@ -184,7 +160,7 @@ def home():
 </head>
 <body>
   <h1>Car Enhancer</h1>
-  <p><small>Upload a photo → see the enhanced result.</small></p>
+  <p><small>Upload a photo → see the enhanced result. (If OPENAI_API_KEY is missing, enhancement will error.)</small></p>
 
   <div class="card">
     <form id="f">
@@ -222,15 +198,10 @@ def home():
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
 
-      const delta = res.headers.get("X-AI-DELTA") || "";
-      const v = res.headers.get("X-APP-VERSION") || "";
-      const canvas = res.headers.get("X-API-CANVAS") || "";
-
       out.innerHTML = `
         <h3>Result</h3>
         <img src="${url}" />
         <p><a href="${url}" target="_blank" rel="noopener">Open in new tab</a></p>
-        <p><small>Version: ${v} | Canvas: ${canvas} ${delta ? (" | AI delta: " + delta) : ""}</small></p>
       `;
     });
   </script>
@@ -242,13 +213,13 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": APP_VERSION}
+    return {"status": "ok"}
 
 
 @app.post("/enhance")
 async def enhance(
     file: UploadFile = File(...),
-    strength: float = Form(0.30),
+    strength: float = Form(0.35),
 ):
     tmp_paths: list[str] = []
     try:
@@ -257,35 +228,30 @@ async def enhance(
         pil_in = ImageOps.exif_transpose(pil_in)
         original_full = pil_in.convert("RGB")
 
-        out_fmt, out_mime, _ = _guess_out_fmt(file, pil_in.format)
+        out_fmt, out_mime, out_ext = _guess_out_fmt(file, pil_in.format)
 
         orig_w, orig_h = original_full.size
 
+        # Choose best canvas for original ratio
         canvas_w, canvas_h = _choose_api_canvas(orig_w, orig_h)
         size_str = f"{canvas_w}x{canvas_h}"
 
-        # Blur-fill letterbox (more stable than dark borders)
-        canvas_img, box = _pad_to_canvas_blur_fill(original_full, canvas_w, canvas_h)
+        # Letterbox to canvas (no crop, no squish)
+        canvas_img, box = _pad_to_canvas_no_distort(original_full, canvas_w, canvas_h)
 
-        strength = float(_clamp(float(strength), 0.0, 1.0))
-
-        # Deterministic pregrade
-        det_np = enhance_image(canvas_img, strength=strength).astype(np.uint8)
+        # Deterministic pregrade (global only)
+        det_np = enhance_image(canvas_img, strength=float(strength)).astype(np.uint8)
         det_img = Image.fromarray(det_np, mode="RGB")
 
+        # Write BOTH for anchoring
         det_path = _write_temp_png(det_img)
         orig_path = _write_temp_png(canvas_img)
         tmp_paths.extend([det_path, orig_path])
 
-        # AI edit
+        # AI edit with two-image input
         ai_canvas = _call_ai_edit(det_path, orig_path, size_str)
 
-        # Debug: how much AI changed pixels (mean absolute diff on canvas)
-        orig_np = np.array(canvas_img, dtype=np.uint8)
-        ai_np = np.array(ai_canvas, dtype=np.uint8)
-        ai_delta = float(np.mean(np.abs(orig_np.astype(np.int16) - ai_np.astype(np.int16))))
-
-        # Crop back to real content region + resize back to original
+        # Crop back to real content region and resize back to original
         ai_cropped = ai_canvas.crop(box)
         final = ai_cropped.resize((orig_w, orig_h), Image.LANCZOS)
 
@@ -295,13 +261,12 @@ async def enhance(
             content=body,
             media_type=out_mime,
             headers={
-                "X-APP-VERSION": APP_VERSION,
                 "X-AI-USED": "true",
-                "X-AI-DELTA": f"{ai_delta:.3f}",
                 "X-ORIG": f"{orig_w}x{orig_h}",
                 "X-API-CANVAS": size_str,
                 "X-BOX": f"{box[0]},{box[1]},{box[2]},{box[3]}",
-                "X-STRENGTH": f"{strength:.2f}",
+                "X-STRENGTH": f"{float(strength):.2f}",
+                # Important: inline display, not forced download
                 "Content-Disposition": "inline",
             },
         )
