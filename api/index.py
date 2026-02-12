@@ -35,7 +35,7 @@ GOAL LOOK:
 - Neutralize fluorescent/garage color cast (cleaner whites, more neutral).
 - Deeper blacks + better midtone contrast with a gentle S-curve (premium, punchy).
 - Recover highlights and lift shadows slightly (still natural).
-- Add realistic micro-contrast/clarity and ery mild sharpening; preserve existing edge shapes exactly; do not invent edges (no halos, no HDR).
+- Add realistic micro-contrast/clarity and very mild sharpening; preserve existing edge shapes exactly; do not invent edges (no halos, no HDR).
 
 FRAMING (STRICT):
 - Keep the original framing/composition exactly the same.
@@ -169,7 +169,7 @@ def home():
       <input name="file" type="file" accept="image/*" required />
 
       <label>Strength (0.0–1.0)</label>
-      <input name="strength" type="number" min="0" max="1" step="0.05" value="0.35" />
+      <input name="strength" type="number" min="0" max="1" step="0.05" value="0.55" />
 
       <button type="submit">Enhance</button>
     </form>
