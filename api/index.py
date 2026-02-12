@@ -27,9 +27,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-)
-
-
 PROMPT = """
 Edit (not recreate) this exact photo for a premium car sales listing.
 
