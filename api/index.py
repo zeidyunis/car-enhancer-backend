@@ -35,7 +35,7 @@ GOAL LOOK:
 - Neutralize fluorescent/garage color cast (cleaner whites, more neutral).
 - Deeper blacks + better midtone contrast with a gentle S-curve (premium, punchy).
 - Recover highlights and lift shadows slightly (still natural).
-- Add realistic micro-contrast/clarity and clean sharpening (no halos, no HDR).
+- Add realistic micro-contrast/clarity and ery mild sharpening; preserve existing edge shapes exactly; do not invent edges (no halos, no HDR).
 
 FRAMING (STRICT):
 - Keep the original framing/composition exactly the same.
@@ -44,7 +44,7 @@ FRAMING (STRICT):
 ABSOLUTE IMMUTABLE (DO NOT CHANGE):
 - DO NOT CHANGE Wheels/rims/tires/center caps/logos
 - DO NOT CHANGE Badges/logos/text/plates
-- DO NOT CHANGE eadlight/taillight shapes and internal patterns
+- DO NOT CHANGE headlight/taillight shapes and internal patterns
 - DO NOT CHANGE Body shape, reflections structure, background layout
 - Do not add/remove objects
 - Do NOT reinterpret or redraw edges, patterns, or textures. Preserve all geometry exactly.
@@ -169,7 +169,7 @@ def home():
       <input name="file" type="file" accept="image/*" required />
 
       <label>Strength (0.0–1.0)</label>
-      <input name="strength" type="number" min="0" max="1" step="0.05" value="0.55" />
+      <input name="strength" type="number" min="0" max="1" step="0.05" value="0.35" />
 
       <button type="submit">Enhance</button>
     </form>
