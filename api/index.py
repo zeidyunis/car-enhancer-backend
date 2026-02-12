@@ -14,7 +14,7 @@ from openai import OpenAI
 from api.utils.opencv_pipeline import enhance_image
 
 
-APP_VERSION = "simple-retouch-v2"  # change this when you redeploy to confirm you're on latest
+APP_VERSION = "simple-retouch-v3-1024bias"
 
 app = FastAPI()
 
@@ -29,7 +29,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Keep prompt SHORT + retouch-only. Long “premium/punchy/clarity/sharpen” prompts increase repainting.
+# Short, retouch-only. Removed "noise cleanup" (can trigger repainting).
+# Added "Lightroom-like global adjustments only; no local edits".
 PROMPT = """
 Retouch this exact photo (do not recreate it).
 
@@ -37,7 +38,6 @@ ALLOWED (GLOBAL ONLY):
 - Correct white balance / color cast (neutral, natural)
 - Small exposure + contrast adjustment (gentle S-curve)
 - Mild highlight recovery + mild shadow lift
-- Very subtle cleanup of noise (do not invent texture)
 
 STRICTLY FORBIDDEN (DO NOT CHANGE ANY OF THIS):
 - wheels/rims/tires/center caps/logos
@@ -51,6 +51,10 @@ STRICTLY FORBIDDEN (DO NOT CHANGE ANY OF THIS):
 
 FRAMING:
 - Do not crop, zoom, rotate, or change aspect ratio.
+
+IMPORTANT:
+- Apply only global color and tone adjustments (like Lightroom).
+- No local edits. No retouching of specific areas.
 """.strip()
 
 
@@ -85,9 +89,12 @@ def _guess_out_fmt(upload: UploadFile, pil_format: str | None) -> tuple[str, str
 
 
 def _choose_api_canvas(w: int, h: int) -> tuple[int, int]:
-    # Choose closest supported canvas by aspect ratio
+    """
+    Prefer 1024-based canvases for stability (less "reconstruction" drift than 1536-wide).
+    We bias by ordering options so 1024 canvases win ties.
+    """
     target = w / h
-    options = [(1024, 1024), (1536, 1024), (1024, 1536)]
+    options = [(1024, 1024), (1024, 1536), (1536, 1024)]
     return min(options, key=lambda wh: abs((wh[0] / wh[1]) - target))
 
 
@@ -95,7 +102,7 @@ def _pad_to_canvas_blur_fill(img: Image.Image, canvas_w: int, canvas_h: int):
     """
     Letterbox WITHOUT dark borders.
     Dark borders often make the model "re-render" edges/details.
-    This uses a blurred, edge-extended background.
+    Uses blurred, edge-extended background.
     """
     img = img.convert("RGB")
     w, h = img.size
@@ -111,7 +118,7 @@ def _pad_to_canvas_blur_fill(img: Image.Image, canvas_w: int, canvas_h: int):
     cover_w = max(1, int(w * cover_scale))
     cover_h = max(1, int(h * cover_scale))
     bg = img.resize((cover_w, cover_h), Image.LANCZOS)
-    # center-crop bg to canvas size
+
     bx = (cover_w - canvas_w) // 2
     by = (cover_h - canvas_h) // 2
     bg = bg.crop((bx, by, bx + canvas_w, by + canvas_h))
@@ -217,12 +224,13 @@ def home():
 
       const delta = res.headers.get("X-AI-DELTA") || "";
       const v = res.headers.get("X-APP-VERSION") || "";
+      const canvas = res.headers.get("X-API-CANVAS") || "";
 
       out.innerHTML = `
         <h3>Result</h3>
         <img src="${url}" />
         <p><a href="${url}" target="_blank" rel="noopener">Open in new tab</a></p>
-        <p><small>Version: ${v} ${delta ? (" | AI delta: " + delta) : ""}</small></p>
+        <p><small>Version: ${v} | Canvas: ${canvas} ${delta ? (" | AI delta: " + delta) : ""}</small></p>
       `;
     });
   </script>
