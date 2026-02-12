@@ -168,7 +168,7 @@ def home():
       <input name="file" type="file" accept="image/*" required />
 
       <label>Strength (0.0–1.0)</label>
-      <input name="strength" type="number" min="0" max="1" step="0.05" value="0.55" />
+      <input name="strength" type="number" min="0" max="1" step="0.05" value="0.30" />
 
       <button type="submit">Enhance</button>
     </form>
