@@ -20,7 +20,6 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://be57ce02-6783-4807-a967-7ede7043ec97.lovableproject.com",
-        "https://id-preview--be57ce02-6783-4807-a967-7ede7043ec97.lovable.app",
     ],
     allow_credentials=False,
     allow_methods=["*"],
@@ -35,17 +34,17 @@ GOAL LOOK:
 - Neutralize fluorescent/garage color cast (cleaner whites, more neutral).
 - Deeper blacks + better midtone contrast with a gentle S-curve (premium, punchy).
 - Recover highlights and lift shadows slightly (still natural).
-- Add realistic micro-contrast/clarity and very mild sharpening; preserve existing edge shapes exactly; do not invent edges (no halos, no HDR).
+- Add realistic micro-contrast/clarity and clean sharpening (no halos, no HDR).
 
 FRAMING (STRICT):
 - Keep the original framing/composition exactly the same.
 - Do NOT crop, zoom, rotate, or change aspect ratio.
 
 ABSOLUTE IMMUTABLE (DO NOT CHANGE):
-- DO NOT CHANGE Wheels/rims/tires/center caps/logos
-- DO NOT CHANGE Badges/logos/text/plates
-- DO NOT CHANGE headlight/taillight shapes and internal patterns
-- DO NOT CHANGE Body shape, reflections structure, background layout
+- Wheels/rims/tires/center caps/logos
+- Badges/logos/text/plates
+- Headlight/taillight shapes and internal patterns
+- Body shape, reflections structure, background layout
 - Do not add/remove objects
 - Do NOT reinterpret or redraw edges, patterns, or textures. Preserve all geometry exactly.
 - Do NOT add features that are not present (e.g., headlight washers, sensors, vents, badges, chrome accents).
