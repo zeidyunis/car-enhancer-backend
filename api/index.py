@@ -20,67 +20,41 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://be57ce02-6783-4807-a967-7ede7043ec97.lovableproject.com",
-        "https://id-preview--be57ce02-6783-4807-a967-7ede7043ec97.lovable.app",
     ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -------------------------
-# PROMPTS (Normal + Micro)
-# -------------------------
 
-PROMPT_NORMAL = """
-Edit (not recreate) this exact photo for a car sales listing.
+PROMPT = """
+Edit (not recreate) this exact photo for a premium car sales listing.
 
-GOAL LOOK (GLOBAL ONLY):
-- Neutralize color cast (cleaner whites, more neutral).
-- Slightly deeper blacks + better midtone contrast with a gentle S-curve.
+GOAL LOOK:
+- Neutralize fluorescent/garage color cast (cleaner whites, more neutral).
+- Deeper blacks + better midtone contrast with a gentle S-curve (premium, punchy).
 - Recover highlights and lift shadows slightly (still natural).
-- Very subtle clarity only (do NOT invent edges; no HDR; no halos).
+- Add realistic micro-contrast/clarity and mild sharpening (no halos, no HDR).
 
 FRAMING (STRICT):
 - Keep the original framing/composition exactly the same.
 - Do NOT crop, zoom, rotate, or change aspect ratio.
 
 ABSOLUTE IMMUTABLE (DO NOT CHANGE):
-- DO NOT CHANGE wheels/rims/tires/center caps/logos
-- DO NOT CHANGE badges/logos/text/plates
-- DO NOT CHANGE headlight/taillight shapes, amber markers/reflectors, and internal patterns
-- DO NOT CHANGE body shape, panel gaps, trim pieces, sensors, washers, vents, chrome accents
-- Do NOT add/remove objects
-- Do NOT redraw or reinterpret edges, patterns, or textures. Preserve all geometry exactly.
+- DO NOT CHANGE Wheels/rims/tires/center caps/logos
+- DO NOT CHANGE Badges/logos/text/plates
+- DO NOT CHANGE Headlight/taillight shapes and internal patterns
+- DO NOT CHANGE Body shape, reflections structure, background layout
+- Do not add/remove objects
+- Do NOT reinterpret or redraw edges, patterns, or textures. Preserve all geometry exactly.
+- Do NOT add features that are not present (e.g., headlight washers, sensors, vents, badges, chrome accents).
 - If a feature is not visible in the original, it must remain absent.
-- Do not “upgrade” the trim/package.
+- Do not “upgrade” the car trim/package.
 
-IMPORTANT:
-- Adjust lighting/color only. No object reconstruction. No redesign.
-- Prefer subtle, realistic retouching.
+EDITS MUST BE GLOBAL ONLY (uniform across whole image).
+Lens distortion: subtle global de-warp only if needed.
+Photorealistic. High quality.
 """.strip()
-
-PROMPT_MICRO = """
-Edit (not recreate) this exact photo with a MICRO retouch only.
-
-ALLOWED (GLOBAL ONLY):
-- Very small white balance correction
-- Very small exposure/contrast adjustment
-- Very small highlight recovery and shadow lift
-
-ABSOLUTE IMMUTABLE (DO NOT CHANGE):
-- Do NOT change wheels/rims/tires/center caps/logos
-- Do NOT change headlights/taillights/amber markers/reflectors
-- Do NOT change badges/grille/bumper shapes or any trim/sensors/washers/vents
-- Do NOT add/remove objects
-- Do NOT redraw edges or textures
-- Do NOT modify geometry, proportions, reflections structure, or background layout
-
-FRAMING (STRICT):
-- No crop/zoom/rotate/aspect change.
-
-Return the same photo, only slightly better color and exposure. No sharpening.
-""".strip()
-
 
 def _client() -> OpenAI:
     key = os.getenv("OPENAI_API_KEY")
@@ -142,100 +116,7 @@ def _write_temp_png(pil_img: Image.Image) -> str:
     return path
 
 
-def _clamp(x: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, x))
-
-
-# -------------------------
-# Anti-hallucination gate
-# -------------------------
-
-def _norm_boxes_default() -> list[tuple[float, float, float, float]]:
-    """
-    Conservative "typical car listing" protected ROIs in normalized coords (x0,y0,x1,y1)
-    for a 3/4 front view:
-      - rear wheel region (left/lower)
-      - front wheel region (mid/right-lower)
-      - headlight/front fascia region (right/upper-mid)
-    If these are slightly off, the GLOBAL gate still helps; you can tune later.
-    """
-    return [
-        (0.12, 0.58, 0.33, 0.88),  # rear wheel area
-        (0.44, 0.56, 0.70, 0.90),  # front wheel area
-        (0.58, 0.28, 0.92, 0.62),  # headlight + grille area
-    ]
-
-
-def _boxes_from_norm(norm_boxes: list[tuple[float, float, float, float]], w: int, h: int) -> list[tuple[int, int, int, int]]:
-    out = []
-    for x0, y0, x1, y1 in norm_boxes:
-        bx0 = int(_clamp(x0, 0.0, 1.0) * w)
-        by0 = int(_clamp(y0, 0.0, 1.0) * h)
-        bx1 = int(_clamp(x1, 0.0, 1.0) * w)
-        by1 = int(_clamp(y1, 0.0, 1.0) * h)
-        # ensure valid non-empty
-        bx0, bx1 = sorted((max(0, bx0), min(w, bx1)))
-        by0, by1 = sorted((max(0, by0), min(h, by1)))
-        if bx1 - bx0 >= 8 and by1 - by0 >= 8:
-            out.append((bx0, by0, bx1, by1))
-    return out
-
-
-def _mean_abs_diff(a: np.ndarray, b: np.ndarray) -> float:
-    # a,b uint8 HxWx3
-    return float(np.mean(np.abs(a.astype(np.int16) - b.astype(np.int16))))
-
-
-def _gate_drift(
-    orig_canvas: Image.Image,
-    ai_canvas: Image.Image,
-    roi_threshold: float = 7.0,
-    global_threshold: float = 10.0,
-) -> tuple[bool, dict]:
-    """
-    Returns (ok, metrics).
-    - roi_threshold: mean absolute diff per ROI (0-255) allowed
-    - global_threshold: mean absolute diff over whole image allowed
-    """
-    orig = np.array(orig_canvas.convert("RGB"), dtype=np.uint8)
-    ai = np.array(ai_canvas.convert("RGB"), dtype=np.uint8)
-
-    if orig.shape != ai.shape:
-        return False, {"reason": "shape_mismatch", "orig_shape": str(orig.shape), "ai_shape": str(ai.shape)}
-
-    h, w = orig.shape[:2]
-
-    metrics = {}
-    metrics["global_mad"] = _mean_abs_diff(orig, ai)
-
-    # ROI checks (wheels/headlights-ish)
-    rois = _boxes_from_norm(_norm_boxes_default(), w, h)
-    roi_mads = []
-    for i, (x0, y0, x1, y1) in enumerate(rois):
-        m = _mean_abs_diff(orig[y0:y1, x0:x1], ai[y0:y1, x0:x1])
-        roi_mads.append(m)
-        metrics[f"roi{i}_mad"] = m
-        metrics[f"roi{i}_box"] = f"{x0},{y0},{x1},{y1}"
-
-    metrics["roi_max_mad"] = max(roi_mads) if roi_mads else 0.0
-
-    # Decision
-    ok = True
-    if metrics["global_mad"] > global_threshold:
-        ok = False
-        metrics["reason"] = "global_drift"
-    if metrics["roi_max_mad"] > roi_threshold:
-        ok = False
-        metrics["reason"] = "roi_drift"
-
-    return ok, metrics
-
-
-# -------------------------
-# OpenAI call
-# -------------------------
-
-def _call_ai_edit(det_path: str, orig_path: str, size_str: str, prompt_text: str) -> Image.Image:
+def _call_ai_edit(det_path: str, orig_path: str, size_str: str) -> Image.Image:
     """
     Two-image anchoring to reduce hallucinations:
       image[0] = deterministic graded image (what we want)
@@ -246,7 +127,7 @@ def _call_ai_edit(det_path: str, orig_path: str, size_str: str, prompt_text: str
         result = client.images.edit(
             model="gpt-image-1.5",
             image=[f_det, f_orig],
-            prompt=prompt_text,
+            prompt=PROMPT,
             size=size_str,
             quality="high",
             output_format="png",
@@ -270,13 +151,11 @@ def home():
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; max-width: 820px; margin: 0 auto; }
     .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; }
     label { display:block; margin: 12px 0 6px; }
-    input[type="file"], input[type="number"], select { width: 100%; }
+    input[type="file"], input[type="number"] { width: 100%; }
     button { margin-top: 14px; padding: 10px 14px; border-radius: 10px; border: 1px solid #111; background: #111; color: #fff; cursor: pointer; }
     img { max-width: 100%; border-radius: 12px; border: 1px solid #ddd; margin-top: 16px; }
     small { color:#555; }
     pre { white-space: pre-wrap; }
-    .row { display:flex; gap:12px; flex-wrap: wrap; }
-    .row > div { flex: 1 1 220px; }
   </style>
 </head>
 <body>
@@ -288,26 +167,8 @@ def home():
       <label>Photo</label>
       <input name="file" type="file" accept="image/*" required />
 
-      <div class="row">
-        <div>
-          <label>Deterministic Strength (0.0–1.0)</label>
-          <input name="strength" type="number" min="0" max="1" step="0.05" value="0.35" />
-        </div>
-        <div>
-          <label>AI Mode</label>
-          <select name="ai_mode">
-            <option value="normal" selected>normal</option>
-            <option value="micro">micro (safest)</option>
-          </select>
-        </div>
-        <div>
-          <label>Drift Gate</label>
-          <select name="gate">
-            <option value="true" selected>on</option>
-            <option value="false">off</option>
-          </select>
-        </div>
-      </div>
+      <label>Strength (0.0–1.0)</label>
+      <input name="strength" type="number" min="0" max="1" step="0.05" value="0.30" />
 
       <button type="submit">Enhance</button>
     </form>
@@ -337,18 +198,10 @@ def home():
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
 
-      const gate = res.headers.get("X-GATE") || "";
-      const drift = res.headers.get("X-DRIFT") || "";
-      const retry = res.headers.get("X-AI-RETRY") || "";
-      const aiUsed = res.headers.get("X-AI-USED") || "";
-
       out.innerHTML = `
         <h3>Result</h3>
         <img src="${url}" />
         <p><a href="${url}" target="_blank" rel="noopener">Open in new tab</a></p>
-        <p><small>
-          AI: ${aiUsed} | Gate: ${gate} ${retry ? ("| Retry: " + retry) : ""} ${drift ? ("| Drift: " + drift) : ""}
-        </small></p>
       `;
     });
   </script>
@@ -367,12 +220,6 @@ def health():
 async def enhance(
     file: UploadFile = File(...),
     strength: float = Form(0.35),
-
-    # Optional controls (won't break existing clients)
-    ai_mode: str = Form("normal"),          # "normal" | "micro"
-    gate: str = Form("true"),               # "true" | "false"
-    roi_threshold: float = Form(7.0),       # lower = stricter (more rejects)
-    global_threshold: float = Form(10.0),   # lower = stricter (more rejects)
 ):
     tmp_paths: list[str] = []
     try:
@@ -393,8 +240,7 @@ async def enhance(
         canvas_img, box = _pad_to_canvas_no_distort(original_full, canvas_w, canvas_h)
 
         # Deterministic pregrade (global only)
-        strength = float(_clamp(float(strength), 0.0, 1.0))
-        det_np = enhance_image(canvas_img, strength=strength).astype(np.uint8)
+        det_np = enhance_image(canvas_img, strength=float(strength)).astype(np.uint8)
         det_img = Image.fromarray(det_np, mode="RGB")
 
         # Write BOTH for anchoring
@@ -402,61 +248,8 @@ async def enhance(
         orig_path = _write_temp_png(canvas_img)
         tmp_paths.extend([det_path, orig_path])
 
-        # Choose prompt
-        ai_mode = (ai_mode or "normal").strip().lower()
-        prompt_text = PROMPT_MICRO if ai_mode == "micro" else PROMPT_NORMAL
-
-        # AI edit (attempt 1)
-        ai_canvas = _call_ai_edit(det_path, orig_path, size_str, prompt_text=prompt_text)
-
-        # Drift gate (optional) + auto-retry
-        gate_on = (gate or "true").strip().lower() == "true"
-        drift_metrics = {}
-        retried = "false"
-
-        if gate_on:
-            ok, drift_metrics = _gate_drift(
-                orig_canvas=canvas_img,
-                ai_canvas=ai_canvas,
-                roi_threshold=float(roi_threshold),
-                global_threshold=float(global_threshold),
-            )
-
-            if not ok:
-                # Retry once: tighten prompt + reduce deterministic strength a bit
-                retried = "true"
-                strength_retry = _clamp(strength * 0.8, 0.15, 0.35)
-
-                det_np2 = enhance_image(canvas_img, strength=float(strength_retry)).astype(np.uint8)
-                det_img2 = Image.fromarray(det_np2, mode="RGB")
-
-                det_path2 = _write_temp_png(det_img2)
-                tmp_paths.append(det_path2)
-
-                ai_canvas2 = _call_ai_edit(
-                    det_path2,
-                    orig_path,
-                    size_str,
-                    prompt_text=PROMPT_MICRO,  # safest on retry
-                )
-
-                ok2, drift_metrics2 = _gate_drift(
-                    orig_canvas=canvas_img,
-                    ai_canvas=ai_canvas2,
-                    roi_threshold=float(roi_threshold),
-                    global_threshold=float(global_threshold),
-                )
-
-                if ok2:
-                    ai_canvas = ai_canvas2
-                    drift_metrics = drift_metrics2
-                    strength = strength_retry
-                    prompt_text = PROMPT_MICRO
-                else:
-                    # Hard fallback: return deterministic-only (guaranteed no hallucination)
-                    ai_canvas = det_img
-                    drift_metrics = drift_metrics2
-                    prompt_text = "DETERMINISTIC_FALLBACK"
+        # AI edit with two-image input
+        ai_canvas = _call_ai_edit(det_path, orig_path, size_str)
 
         # Crop back to real content region and resize back to original
         ai_cropped = ai_canvas.crop(box)
@@ -464,25 +257,16 @@ async def enhance(
 
         body = _save_bytes(final, out_fmt)
 
-        # Minimal drift header (keep short)
-        drift_reason = drift_metrics.get("reason", "")
-        drift_summary = ""
-        if drift_reason:
-            drift_summary = f"{drift_reason};g={drift_metrics.get('global_mad', 0):.2f};rmax={drift_metrics.get('roi_max_mad', 0):.2f}"
-
         return Response(
             content=body,
             media_type=out_mime,
             headers={
                 "X-AI-USED": "true",
-                "X-AI-MODE": ai_mode,
-                "X-AI-RETRY": retried,
-                "X-GATE": "on" if gate_on else "off",
-                "X-DRIFT": drift_summary,
                 "X-ORIG": f"{orig_w}x{orig_h}",
                 "X-API-CANVAS": size_str,
                 "X-BOX": f"{box[0]},{box[1]},{box[2]},{box[3]}",
                 "X-STRENGTH": f"{float(strength):.2f}",
+                # Important: inline display, not forced download
                 "Content-Disposition": "inline",
             },
         )
