@@ -28,32 +28,49 @@ app.add_middleware(
 
 
 PROMPT = """
-Edit (not recreate) this exact photo for a premium car sales listing.
+You are performing pixel-level global post-processing on the EXACT provided image.
 
-GOAL LOOK:
-- Neutralize fluorescent/garage color cast (cleaner whites, more neutral).
-- Deeper blacks + better midtone contrast with a gentle S-curve (premium, punchy).
-- Recover highlights and lift shadows slightly (still natural).
-- Add realistic micro-contrast/clarity and mild sharpening (no halos, no HDR).
+This is NOT a redesign task.
+This is NOT a generative task.
+This is NOT a reconstruction task.
 
-FRAMING (STRICT):
-- Keep the original framing/composition exactly the same.
-- Do NOT crop, zoom, rotate, or change aspect ratio.
+You must preserve 100% of the original geometry, structure, reflections, textures, edges, badges, trim, and all physical features.
 
-ABSOLUTE IMMUTABLE (DO NOT CHANGE):
-- DO NOT CHANGE Wheels/rims/tires/center caps/logos
-- DO NOT CHANGE Badges/logos/text/plates
-- DO NOT CHANGE Headlight/taillight shapes and internal patterns
-- DO NOT CHANGE Body shape, reflections structure, background layout
-- Do not add/remove objects
-- Do NOT reinterpret or redraw edges, patterns, or textures. Preserve all geometry exactly.
-- Do NOT add features that are not present (e.g., headlight washers, sensors, vents, badges, chrome accents).
-- If a feature is not visible in the original, it must remain absent.
-- Do not “upgrade” the car trim/package.
+You are allowed to perform ONLY global tonal corrections.
 
-EDITS MUST BE GLOBAL ONLY (uniform across whole image).
-Lens distortion: subtle global de-warp only if needed.
-Photorealistic. High quality.
+ALLOWED OPERATIONS (GLOBAL ONLY):
+- White balance correction (neutralize color cast)
+- Global contrast adjustment
+- Gentle S-curve tone refinement
+- Mild highlight recovery
+- Mild shadow lift
+- Subtle global clarity (micro-contrast)
+- Very mild global sharpening
+
+STRICTLY FORBIDDEN:
+- Do NOT change body lines
+- Do NOT modify wheels, spokes, or center caps
+- Do NOT alter headlights or taillight internals
+- Do NOT add/remove sensors, washers, vents, badges, chrome, trim
+- Do NOT alter reflections or panel shapes
+- Do NOT change background geometry
+- Do NOT clean up damage or modify imperfections
+- Do NOT reinterpret edges or surfaces
+- Do NOT “improve” design
+- Do NOT add details that were not visible
+- Do NOT remove visible details
+- Do NOT reshape anything
+- Do NOT crop, zoom, rotate, reframe
+
+If any requested enhancement would require structural modification, DO NOTHING instead.
+
+Edits must be uniform across the entire image.
+No local masking.
+No object-level modification.
+No content synthesis.
+
+The output must look like the same photo taken with better lighting and proper color correction.
+
 """.strip()
 
 def _client() -> OpenAI:
