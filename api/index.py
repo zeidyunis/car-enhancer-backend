@@ -173,13 +173,13 @@ def _call_ai_edit(
         else:
             # single anchor: det only (closest to "retouch this exact photo")
             result = client.images.edit(
-                model="gpt-image-1.5",
-                image=f_det,
-                prompt=PROMPT_CHATLIKE,
-                size=size_str,
-                quality=quality,
-                output_format="png",
-            )
+    model="gpt-image-1.5",
+    image=[f_det, f_orig],
+    prompt=PROMPT,
+    size=size_str,
+    quality="high",
+)
+
 
     out_bytes = base64.b64decode(result.data[0].b64_json)
     return Image.open(io.BytesIO(out_bytes)).convert("RGB")
