@@ -14,58 +14,53 @@ from openai import OpenAI
 from api.utils.opencv_pipeline import enhance_image
 
 
-APP_VERSION = "working-stable-v1"
-
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://be57ce02-6783-4807-a967-7ede7043ec97.lovableproject.com",
-        "https://id-preview--be57ce02-6783-4807-a967-7ede7043ec97.lovable.app",
     ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Short + global-only prompt = least repainting
+
 PROMPT = """
-Retouch this exact photo (do not recreate it).
+Edit (not recreate) this exact photo for a premium car sales listing.
 
-ALLOWED (GLOBAL ONLY, like Lightroom):
-- White balance / color cast correction (neutral, natural)
-- Small exposure + contrast adjustment (gentle tone curve)
-- Mild highlight recovery + mild shadow lift
+GOAL LOOK:
+- Neutralize fluorescent/garage color cast (cleaner whites, more neutral).
+- Deeper blacks + better midtone contrast with a gentle S-curve (premium, punchy).
+- Recover highlights and lift shadows slightly (still natural).
+- Add realistic micro-contrast/clarity and mild sharpening (no halos, no HDR).
 
-FORBIDDEN (DO NOT CHANGE):
-- Wheels/rims/tires/center caps/logos
-- Headlights/taillights/amber markers/reflectors and internal patterns
-- Badges/text/plates
-- Grille/bumper/trim/sensors/vents/washers
-- Body shape, panel gaps, reflections structure
-- Background objects/layout
-- Do not add/remove anything
-- Do not redraw edges or textures
+FRAMING (STRICT):
+- Keep the original framing/composition exactly the same.
+- Do NOT crop, zoom, rotate, or change aspect ratio.
 
-FRAMING:
-- No crop/zoom/rotate/aspect change.
+ABSOLUTE IMMUTABLE (DO NOT CHANGE):
+- DO NOT CHANGE Wheels/rims/tires/center caps/logos
+- DO NOT CHANGE Badges/logos/text/plates
+- DO NOT CHANGE Headlight/taillight shapes and internal patterns
+- DO NOT CHANGE Body shape, reflections structure, background layout
+- Do not add/remove objects
+- Do NOT reinterpret or redraw edges, patterns, or textures. Preserve all geometry exactly.
+- Do NOT add features that are not present (e.g., headlight washers, sensors, vents, badges, chrome accents).
+- If a feature is not visible in the original, it must remain absent.
+- Do not “upgrade” the car trim/package.
 
-IMPORTANT:
-- Global adjustments only. No local edits.
-- Preserve every physical detail exactly.
+EDITS MUST BE GLOBAL ONLY (uniform across whole image).
+Lens distortion: subtle global de-warp only if needed.
+Photorealistic. High quality.
 """.strip()
-
 
 def _client() -> OpenAI:
     key = os.getenv("OPENAI_API_KEY")
     if not key:
         raise RuntimeError("OPENAI_API_KEY is not set")
     return OpenAI(api_key=key)
-
-
-def _clamp(x: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, x))
 
 
 def _save_bytes(img: Image.Image, fmt: str) -> bytes:
@@ -87,21 +82,15 @@ def _guess_out_fmt(upload: UploadFile, pil_format: str | None) -> tuple[str, str
     return "JPEG", "image/jpeg", "jpg"
 
 
-def _choose_api_canvas(w: int, h: int, max_canvas: int = 1024) -> tuple[int, int]:
-    """
-    max_canvas=1024 is most stable (and cheaper).
-    If you insist on bigger, set max_canvas=1536.
-    """
+def _choose_api_canvas(w: int, h: int) -> tuple[int, int]:
+    # Choose closest supported canvas by aspect ratio (min letterbox/weirdness)
     target = w / h
-    if int(max_canvas) <= 1024:
-        options = [(1024, 1024), (1024, 1536)]
-    else:
-        options = [(1024, 1024), (1536, 1024), (1024, 1536)]
+    options = [(1024, 1024), (1536, 1024), (1024, 1536)]
     return min(options, key=lambda wh: abs((wh[0] / wh[1]) - target))
 
 
 def _pad_to_canvas_no_distort(img: Image.Image, canvas_w: int, canvas_h: int):
-    # Letterbox without distortion, no crop (your original behavior)
+    # Letterbox without distortion, no crop.
     img = img.convert("RGB")
     w, h = img.size
     scale = min(canvas_w / w, canvas_h / h)
@@ -127,52 +116,31 @@ def _write_temp_png(pil_img: Image.Image) -> str:
     return path
 
 
-def _call_ai_edit(
-    det_path: str,
-    orig_path: str,
-    size_str: str,
-    *,
-    anchor_mode: str = "single",   # "single" (cheaper/safer) or "dual" (your old)
-    quality: str = "standard",     # "standard" (cheaper/safer) or "high"
-) -> Image.Image:
+def _call_ai_edit(det_path: str, orig_path: str, size_str: str) -> Image.Image:
+    """
+    Two-image anchoring to reduce hallucinations:
+      image[0] = deterministic graded image (what we want)
+      image[1] = original canvas (what must be preserved)
+    """
     client = _client()
-
-    anchor_mode = (anchor_mode or "single").strip().lower()
-    quality = (quality or "standard").strip().lower()
-    if quality not in ("standard", "high"):
-        quality = "standard"
-    if anchor_mode not in ("single", "dual"):
-        anchor_mode = "single"
-
-    # IMPORTANT: no output_format param (your API is rejecting it)
-    if anchor_mode == "dual":
-        with open(det_path, "rb") as f_det:
-            with open(orig_path, "rb") as f_orig:
-                result = client.images.edit(
-                    model="gpt-image-1.5",
-                    image=[f_det, f_orig],
-                    prompt=PROMPT,
-                    size=size_str,
-                    quality=quality,
-                )
-    else:
-        with open(det_path, "rb") as f_det:
-            result = client.images.edit(
-                model="gpt-image-1.5",
-                image=f_det,
-                prompt=PROMPT,
-                size=size_str,
-                quality=quality,
-            )
-
+    with open(det_path, "rb") as f_det, open(orig_path, "rb") as f_orig:
+        result = client.images.edit(
+            model="gpt-image-1.5",
+            image=[f_det, f_orig],
+            prompt=PROMPT,
+            size=size_str,
+            quality="high",
+            output_format="png",
+        )
     out_bytes = base64.b64decode(result.data[0].b64_json)
     return Image.open(io.BytesIO(out_bytes)).convert("RGB")
 
 
 @app.get("/")
 def home():
+    # Webpage so visiting the Vercel link doesn't "download"
     return HTMLResponse(
-        f"""
+        """
 <!doctype html>
 <html>
 <head>
@@ -180,54 +148,27 @@ def home():
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Car Enhancer</title>
   <style>
-    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; max-width: 920px; margin: 0 auto; }}
-    .card {{ border: 1px solid #ddd; border-radius: 12px; padding: 16px; }}
-    label {{ display:block; margin: 12px 0 6px; }}
-    input[type="file"], input[type="number"], select {{ width: 100%; }}
-    button {{ margin-top: 14px; padding: 10px 14px; border-radius: 10px; border: 1px solid #111; background: #111; color: #fff; cursor: pointer; }}
-    img {{ max-width: 100%; border-radius: 12px; border: 1px solid #ddd; margin-top: 16px; }}
-    small {{ color:#555; }}
-    pre {{ white-space: pre-wrap; }}
-    .row {{ display:flex; gap:12px; flex-wrap: wrap; }}
-    .row > div {{ flex: 1 1 220px; }}
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; max-width: 820px; margin: 0 auto; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; }
+    label { display:block; margin: 12px 0 6px; }
+    input[type="file"], input[type="number"] { width: 100%; }
+    button { margin-top: 14px; padding: 10px 14px; border-radius: 10px; border: 1px solid #111; background: #111; color: #fff; cursor: pointer; }
+    img { max-width: 100%; border-radius: 12px; border: 1px solid #ddd; margin-top: 16px; }
+    small { color:#555; }
+    pre { white-space: pre-wrap; }
   </style>
 </head>
 <body>
   <h1>Car Enhancer</h1>
-  <p><small>Version: {APP_VERSION}</small></p>
+  <p><small>Upload a photo → see the enhanced result. (If OPENAI_API_KEY is missing, enhancement will error.)</small></p>
 
   <div class="card">
     <form id="f">
       <label>Photo</label>
       <input name="file" type="file" accept="image/*" required />
 
-      <div class="row">
-        <div>
-          <label>Deterministic strength</label>
-          <input name="strength" type="number" min="0" max="1" step="0.05" value="0.30" />
-        </div>
-        <div>
-          <label>Anchor mode</label>
-          <select name="anchor_mode">
-            <option value="single" selected>single (recommended)</option>
-            <option value="dual">dual (old mode)</option>
-          </select>
-        </div>
-        <div>
-          <label>AI quality</label>
-          <select name="ai_quality">
-            <option value="standard" selected>standard (recommended)</option>
-            <option value="high">high (stronger)</option>
-          </select>
-        </div>
-        <div>
-          <label>Max canvas</label>
-          <select name="max_canvas">
-            <option value="1024" selected>1024 (recommended)</option>
-            <option value="1536">1536</option>
-          </select>
-        </div>
-      </div>
+      <label>Strength (0.0–1.0)</label>
+      <input name="strength" type="number" min="0" max="1" step="0.05" value="0.30" />
 
       <button type="submit">Enhance</button>
     </form>
@@ -239,37 +180,30 @@ def home():
     const form = document.getElementById('f');
     const out = document.getElementById('out');
 
-    form.addEventListener('submit', async (e) => {{
+    form.addEventListener('submit', async (e) => {
       e.preventDefault();
       out.innerHTML = "<p>Enhancing…</p>";
 
       const fd = new FormData(form);
-      const res = await fetch('/enhance', {{ method: 'POST', body: fd }});
+      const res = await fetch('/enhance', { method: 'POST', body: fd });
 
-      if (!res.ok) {{
+      if (!res.ok) {
         let t = "";
-        try {{ t = JSON.stringify(await res.json(), null, 2); }} catch {{ t = await res.text(); }}
+        try { t = JSON.stringify(await res.json(), null, 2); } catch { t = await res.text(); }
         out.innerHTML = "<pre style='color:#b00;'></pre>";
         out.querySelector("pre").textContent = t;
         return;
-      }}
+      }
 
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
 
-      const v = res.headers.get("X-APP-VERSION") || "";
-      const delta = res.headers.get("X-AI-DELTA") || "";
-      const canvas = res.headers.get("X-API-CANVAS") || "";
-      const anchor = res.headers.get("X-ANCHOR") || "";
-      const q = res.headers.get("X-AI-QUALITY") || "";
-
       out.innerHTML = `
         <h3>Result</h3>
-        <img src="${{url}}" />
-        <p><a href="${{url}}" target="_blank" rel="noopener">Open in new tab</a></p>
-        <p><small>Version: ${{v}} | Canvas: ${{canvas}} | Anchor: ${{anchor}} | Quality: ${{q}}${{delta ? (" | AI delta: " + delta) : ""}}</small></p>
+        <img src="${url}" />
+        <p><a href="${url}" target="_blank" rel="noopener">Open in new tab</a></p>
       `;
-    }});
+    });
   </script>
 </body>
 </html>
@@ -279,16 +213,13 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": APP_VERSION}
+    return {"status": "ok"}
 
 
 @app.post("/enhance")
 async def enhance(
     file: UploadFile = File(...),
-    strength: float = Form(0.30),
-    anchor_mode: str = Form("single"),
-    ai_quality: str = Form("standard"),
-    max_canvas: int = Form(1024),
+    strength: float = Form(0.35),
 ):
     tmp_paths: list[str] = []
     try:
@@ -297,40 +228,30 @@ async def enhance(
         pil_in = ImageOps.exif_transpose(pil_in)
         original_full = pil_in.convert("RGB")
 
-        out_fmt, out_mime, _ = _guess_out_fmt(file, pil_in.format)
+        out_fmt, out_mime, out_ext = _guess_out_fmt(file, pil_in.format)
 
         orig_w, orig_h = original_full.size
 
-        canvas_w, canvas_h = _choose_api_canvas(orig_w, orig_h, max_canvas=int(max_canvas))
+        # Choose best canvas for original ratio
+        canvas_w, canvas_h = _choose_api_canvas(orig_w, orig_h)
         size_str = f"{canvas_w}x{canvas_h}"
 
+        # Letterbox to canvas (no crop, no squish)
         canvas_img, box = _pad_to_canvas_no_distort(original_full, canvas_w, canvas_h)
 
-        strength = float(_clamp(float(strength), 0.0, 1.0))
-
-        # Deterministic pregrade (global)
-        det_np = enhance_image(canvas_img, strength=strength).astype(np.uint8)
+        # Deterministic pregrade (global only)
+        det_np = enhance_image(canvas_img, strength=float(strength)).astype(np.uint8)
         det_img = Image.fromarray(det_np, mode="RGB")
 
+        # Write BOTH for anchoring
         det_path = _write_temp_png(det_img)
         orig_path = _write_temp_png(canvas_img)
         tmp_paths.extend([det_path, orig_path])
 
-        # AI edit (working)
-        ai_canvas = _call_ai_edit(
-            det_path,
-            orig_path,
-            size_str,
-            anchor_mode=anchor_mode,
-            quality=ai_quality,
-        )
+        # AI edit with two-image input
+        ai_canvas = _call_ai_edit(det_path, orig_path, size_str)
 
-        # Debug: how much AI changed pixels on canvas
-        orig_np = np.array(canvas_img, dtype=np.uint8)
-        ai_np = np.array(ai_canvas, dtype=np.uint8)
-        ai_delta = float(np.mean(np.abs(orig_np.astype(np.int16) - ai_np.astype(np.int16))))
-
-        # Crop back to content + resize back to original
+        # Crop back to real content region and resize back to original
         ai_cropped = ai_canvas.crop(box)
         final = ai_cropped.resize((orig_w, orig_h), Image.LANCZOS)
 
@@ -340,15 +261,12 @@ async def enhance(
             content=body,
             media_type=out_mime,
             headers={
-                "X-APP-VERSION": APP_VERSION,
                 "X-AI-USED": "true",
-                "X-AI-DELTA": f"{ai_delta:.3f}",
-                "X-ANCHOR": (anchor_mode or "single").strip().lower(),
-                "X-AI-QUALITY": (ai_quality or "standard").strip().lower(),
                 "X-ORIG": f"{orig_w}x{orig_h}",
                 "X-API-CANVAS": size_str,
                 "X-BOX": f"{box[0]},{box[1]},{box[2]},{box[3]}",
-                "X-STRENGTH": f"{strength:.2f}",
+                "X-STRENGTH": f"{float(strength):.2f}",
+                # Important: inline display, not forced download
                 "Content-Disposition": "inline",
             },
         )
