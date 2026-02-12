@@ -19,13 +19,14 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        # Add BOTH your lovable preview + production domains here
         "https://be57ce02-6783-4807-a967-7ede7043ec97.lovableproject.com",
+        "https://id-preview--be57ce02-6783-4807-a967-7ede7043ec97.lovable.app",
     ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 PROMPT = """
 Edit (not recreate) this exact photo for a premium car sales listing.
@@ -56,6 +57,7 @@ Lens distortion: subtle global de-warp only if needed.
 Photorealistic. High quality.
 """.strip()
 
+
 def _client() -> OpenAI:
     key = os.getenv("OPENAI_API_KEY")
     if not key:
@@ -68,6 +70,7 @@ def _save_bytes(img: Image.Image, fmt: str) -> bytes:
     if fmt == "PNG":
         img.save(buf, format="PNG", optimize=True)
     else:
+        # high quality jpeg (keeps file size reasonable)
         img.save(buf, format="JPEG", quality=95, subsampling=1, optimize=True)
     return buf.getvalue()
 
@@ -82,32 +85,6 @@ def _guess_out_fmt(upload: UploadFile, pil_format: str | None) -> tuple[str, str
     return "JPEG", "image/jpeg", "jpg"
 
 
-def _choose_api_canvas(w: int, h: int) -> tuple[int, int]:
-    # Choose closest supported canvas by aspect ratio (min letterbox/weirdness)
-    target = w / h
-    options = [(1024, 1024), (1536, 1024), (1024, 1536)]
-    return min(options, key=lambda wh: abs((wh[0] / wh[1]) - target))
-
-
-def _pad_to_canvas_no_distort(img: Image.Image, canvas_w: int, canvas_h: int):
-    # Letterbox without distortion, no crop.
-    img = img.convert("RGB")
-    w, h = img.size
-    scale = min(canvas_w / w, canvas_h / h)
-    new_w = max(1, int(w * scale))
-    new_h = max(1, int(h * scale))
-
-    fitted = img.resize((new_w, new_h), Image.LANCZOS)
-
-    canvas = Image.new("RGB", (canvas_w, canvas_h), (18, 18, 18))
-    x = (canvas_w - new_w) // 2
-    y = (canvas_h - new_h) // 2
-    canvas.paste(fitted, (x, y))
-
-    box = (x, y, x + new_w, y + new_h)
-    return canvas, box
-
-
 def _write_temp_png(pil_img: Image.Image) -> str:
     tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
     path = tmp.name
@@ -116,19 +93,41 @@ def _write_temp_png(pil_img: Image.Image) -> str:
     return path
 
 
-def _call_ai_edit(det_path: str, orig_path: str, size_str: str) -> Image.Image:
+def _maybe_downscale(img: Image.Image, max_side: int) -> tuple[Image.Image, bool]:
     """
-    Two-image anchoring to reduce hallucinations:
+    Optional latency/cost guard: downscale huge uploads before running AI.
+    NOTE: output will be AI'ed at the smaller size. You can still return the smaller size
+    (recommended) OR upscale back (not recommended for sharpness).
+    """
+    if max_side <= 0:
+        return img, False
+    w, h = img.size
+    m = max(w, h)
+    if m <= max_side:
+        return img, False
+    scale = max_side / float(m)
+    nw = max(1, int(w * scale))
+    nh = max(1, int(h * scale))
+    return img.resize((nw, nh), Image.LANCZOS), True
+
+
+def _call_ai_edit(det_path: str, orig_path: str) -> Image.Image:
+    """
+    Two-image anchoring:
       image[0] = deterministic graded image (what we want)
-      image[1] = original canvas (what must be preserved)
+      image[1] = original (what must be preserved)
     """
     client = _client()
     with open(det_path, "rb") as f_det, open(orig_path, "rb") as f_orig:
         result = client.images.edit(
+            # Use gpt-image-1.5 (or swap to "chatgpt-image-latest" if you want to test)
             model="gpt-image-1.5",
             image=[f_det, f_orig],
             prompt=PROMPT,
-            size=size_str,
+            # IMPORTANT: preserve details/geometry as much as possible
+            input_fidelity="high",  # supported on gpt-image-1 / 1.5 :contentReference[oaicite:2]{index=2}
+            # IMPORTANT: avoid forced 1024/1536 canvas unless you must
+            size="auto",  # supported by the Images API :contentReference[oaicite:3]{index=3}
             quality="high",
             output_format="png",
         )
@@ -138,7 +137,6 @@ def _call_ai_edit(det_path: str, orig_path: str, size_str: str) -> Image.Image:
 
 @app.get("/")
 def home():
-    # Webpage so visiting the Vercel link doesn't "download"
     return HTMLResponse(
         """
 <!doctype html>
@@ -160,7 +158,7 @@ def home():
 </head>
 <body>
   <h1>Car Enhancer</h1>
-  <p><small>Upload a photo → see the enhanced result. (If OPENAI_API_KEY is missing, enhancement will error.)</small></p>
+  <p><small>Upload a photo → see the enhanced result.</small></p>
 
   <div class="card">
     <form id="f">
@@ -224,36 +222,39 @@ async def enhance(
     tmp_paths: list[str] = []
     try:
         raw = await file.read()
-        pil_in = Image.open(io.BytesIO(raw))
+
+        # Decode + fix EXIF rotation
+        try:
+            pil_in = Image.open(io.BytesIO(raw))
+        except Exception as e:
+            raise RuntimeError(
+                f"Could not decode image. If this is HEIC/HEIF, convert to JPG/PNG before upload. Decoder error: {e}"
+            )
+
         pil_in = ImageOps.exif_transpose(pil_in)
-        original_full = pil_in.convert("RGB")
+        original = pil_in.convert("RGB")
 
-        out_fmt, out_mime, out_ext = _guess_out_fmt(file, pil_in.format)
+        out_fmt, out_mime, _ = _guess_out_fmt(file, pil_in.format)
 
-        orig_w, orig_h = original_full.size
-
-        # Choose best canvas for original ratio
-        canvas_w, canvas_h = _choose_api_canvas(orig_w, orig_h)
-        size_str = f"{canvas_w}x{canvas_h}"
-
-        # Letterbox to canvas (no crop, no squish)
-        canvas_img, box = _pad_to_canvas_no_distort(original_full, canvas_w, canvas_h)
+        # Optional: downscale huge images to reduce latency/cost.
+        # You can tune with env MAX_SIDE (e.g. 2048 or 2560). Set 0 to disable.
+        max_side = int(os.getenv("MAX_SIDE", "2560"))
+        working, did_scale = _maybe_downscale(original, max_side=max_side)
 
         # Deterministic pregrade (global only)
-        det_np = enhance_image(canvas_img, strength=float(strength)).astype(np.uint8)
+        det_np = enhance_image(working, strength=float(strength)).astype(np.uint8)
         det_img = Image.fromarray(det_np, mode="RGB")
 
-        # Write BOTH for anchoring
+        # Anchor both images
         det_path = _write_temp_png(det_img)
-        orig_path = _write_temp_png(canvas_img)
+        orig_path = _write_temp_png(working)
         tmp_paths.extend([det_path, orig_path])
 
-        # AI edit with two-image input
-        ai_canvas = _call_ai_edit(det_path, orig_path, size_str)
+        ai_img = _call_ai_edit(det_path, orig_path)
 
-        # Crop back to real content region and resize back to original
-        ai_cropped = ai_canvas.crop(box)
-        final = ai_cropped.resize((orig_w, orig_h), Image.LANCZOS)
+        # IMPORTANT: do NOT upscale back automatically (it looks softer).
+        # Return AI image at the working resolution (recommended for listings).
+        final = ai_img
 
         body = _save_bytes(final, out_fmt)
 
@@ -262,11 +263,9 @@ async def enhance(
             media_type=out_mime,
             headers={
                 "X-AI-USED": "true",
-                "X-ORIG": f"{orig_w}x{orig_h}",
-                "X-API-CANVAS": size_str,
-                "X-BOX": f"{box[0]},{box[1]},{box[2]},{box[3]}",
                 "X-STRENGTH": f"{float(strength):.2f}",
-                # Important: inline display, not forced download
+                "X-DOWNSCALED": "true" if did_scale else "false",
+                "X-WORKING": f"{working.size[0]}x{working.size[1]}",
                 "Content-Disposition": "inline",
             },
         )
