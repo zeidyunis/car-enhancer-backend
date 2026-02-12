@@ -31,7 +31,7 @@ PROMPT = """
 Edit (not recreate) this exact photo for a premium car sales listing.
 
 GOAL LOOK:
-ENHANCE THE IMAGE WITTHOUT ALTERING IT FOR A LISRING
+ENHANCE THE IMAGE WITTHOUT ALTERING IT.
 """.strip()
 
 def _client() -> OpenAI:
