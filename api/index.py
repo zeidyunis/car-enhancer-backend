@@ -31,7 +31,29 @@ PROMPT = """
 Edit (not recreate) this exact photo for a premium car sales listing.
 
 GOAL LOOK:
-ENHANCE THE IMAGE WITTHOUT ALTERING IT.
+- Neutralize fluorescent/garage color cast (cleaner whites, more neutral).
+- Deeper blacks + better midtone contrast with a gentle S-curve (premium, punchy).
+- Recover highlights and lift shadows slightly (still natural).
+- Add realistic micro-contrast/clarity and mild sharpening (no halos, no HDR).
+
+FRAMING (STRICT):
+- Keep the original framing/composition exactly the same.
+- Do NOT crop, zoom, rotate, or change aspect ratio.
+
+ABSOLUTE IMMUTABLE (DO NOT CHANGE):
+- DO NOT CHANGE Wheels/rims/tires/center caps/logos
+- DO NOT CHANGE Badges/logos/text/plates
+- DO NOT CHANGE Headlight/taillight shapes and internal patterns
+- DO NOT CHANGE Body shape, reflections structure, background layout
+- Do not add/remove objects
+- Do NOT reinterpret or redraw edges, patterns, or textures. Preserve all geometry exactly.
+- Do NOT add features that are not present (e.g., headlight washers, sensors, vents, badges, chrome accents).
+- If a feature is not visible in the original, it must remain absent.
+- Do not “upgrade” the car trim/package.
+
+EDITS MUST BE GLOBAL ONLY (uniform across whole image).
+Lens distortion: subtle global de-warp only if needed.
+Photorealistic. High quality.
 """.strip()
 
 def _client() -> OpenAI:
