@@ -14,7 +14,7 @@ from openai import OpenAI
 from api.utils.opencv_pipeline import enhance_image
 
 
-APP_VERSION = "chatlike-final-v1"
+APP_VERSION = "working-stable-v1"
 
 app = FastAPI()
 
@@ -29,8 +29,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Chat-like prompt: SHORT, global-only, no "clarity/sharpen/premium/punchy" language.
-PROMPT_CHATLIKE = """
+# Short + global-only prompt = least repainting
+PROMPT = """
 Retouch this exact photo (do not recreate it).
 
 ALLOWED (GLOBAL ONLY, like Lightroom):
@@ -89,15 +89,11 @@ def _guess_out_fmt(upload: UploadFile, pil_format: str | None) -> tuple[str, str
 
 def _choose_api_canvas(w: int, h: int, max_canvas: int = 1024) -> tuple[int, int]:
     """
-    Choose a supported output canvas close to aspect ratio.
-    Default bias = 1024 canvases for stability.
-
-    max_canvas:
-      - 1024 (recommended for least drift)
-      - 1536 (if you really want bigger output)
+    max_canvas=1024 is most stable (and cheaper).
+    If you insist on bigger, set max_canvas=1536.
     """
     target = w / h
-    if max_canvas <= 1024:
+    if int(max_canvas) <= 1024:
         options = [(1024, 1024), (1024, 1536)]
     else:
         options = [(1024, 1024), (1536, 1024), (1024, 1536)]
@@ -105,10 +101,7 @@ def _choose_api_canvas(w: int, h: int, max_canvas: int = 1024) -> tuple[int, int
 
 
 def _pad_to_canvas_no_distort(img: Image.Image, canvas_w: int, canvas_h: int):
-    """
-    Your original behavior: letterbox without distortion, no crop.
-    Kept because you said your original code gave better results.
-    """
+    # Letterbox without distortion, no crop (your original behavior)
     img = img.convert("RGB")
     w, h = img.size
     scale = min(canvas_w / w, canvas_h / h)
@@ -117,7 +110,6 @@ def _pad_to_canvas_no_distort(img: Image.Image, canvas_w: int, canvas_h: int):
 
     fitted = img.resize((new_w, new_h), Image.LANCZOS)
 
-    # Dark border (original behavior)
     canvas = Image.new("RGB", (canvas_w, canvas_h), (18, 18, 18))
     x = (canvas_w - new_w) // 2
     y = (canvas_h - new_h) // 2
@@ -140,46 +132,38 @@ def _call_ai_edit(
     orig_path: str,
     size_str: str,
     *,
-    anchor_mode: str = "single",
-    quality: str = "standard",
+    anchor_mode: str = "single",   # "single" (cheaper/safer) or "dual" (your old)
+    quality: str = "standard",     # "standard" (cheaper/safer) or "high"
 ) -> Image.Image:
-    """
-    anchor_mode:
-      - "single" (RECOMMENDED): use deterministic image only (min drift)
-      - "dual": use [det, orig] (your old mode)
-
-    quality:
-      - "standard" (RECOMMENDED): less aggressive, cheaper, usually less drift
-      - "high": more aggressive, more drift risk
-    """
     client = _client()
 
     anchor_mode = (anchor_mode or "single").strip().lower()
     quality = (quality or "standard").strip().lower()
     if quality not in ("standard", "high"):
         quality = "standard"
+    if anchor_mode not in ("single", "dual"):
+        anchor_mode = "single"
 
-    with open(det_path, "rb") as f_det:
-        if anchor_mode == "dual":
+    # IMPORTANT: no output_format param (your API is rejecting it)
+    if anchor_mode == "dual":
+        with open(det_path, "rb") as f_det:
             with open(orig_path, "rb") as f_orig:
                 result = client.images.edit(
                     model="gpt-image-1.5",
                     image=[f_det, f_orig],
-                    prompt=PROMPT_CHATLIKE,
+                    prompt=PROMPT,
                     size=size_str,
                     quality=quality,
-                    output_format="png",
                 )
-        else:
-            # single anchor: det only (closest to "retouch this exact photo")
+    else:
+        with open(det_path, "rb") as f_det:
             result = client.images.edit(
-    model="gpt-image-1.5",
-    image=[f_det, f_orig],
-    prompt=PROMPT,
-    size=size_str,
-    quality="high",
-)
-
+                model="gpt-image-1.5",
+                image=f_det,
+                prompt=PROMPT,
+                size=size_str,
+                quality=quality,
+            )
 
     out_bytes = base64.b64decode(result.data[0].b64_json)
     return Image.open(io.BytesIO(out_bytes)).convert("RGB")
@@ -196,7 +180,7 @@ def home():
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Car Enhancer</title>
   <style>
-    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; max-width: 860px; margin: 0 auto; }}
+    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; max-width: 920px; margin: 0 auto; }}
     .card {{ border: 1px solid #ddd; border-radius: 12px; padding: 16px; }}
     label {{ display:block; margin: 12px 0 6px; }}
     input[type="file"], input[type="number"], select {{ width: 100%; }}
@@ -205,7 +189,7 @@ def home():
     small {{ color:#555; }}
     pre {{ white-space: pre-wrap; }}
     .row {{ display:flex; gap:12px; flex-wrap: wrap; }}
-    .row > div {{ flex: 1 1 240px; }}
+    .row > div {{ flex: 1 1 220px; }}
   </style>
 </head>
 <body>
@@ -219,28 +203,28 @@ def home():
 
       <div class="row">
         <div>
-          <label>Deterministic Strength (0.0–1.0)</label>
+          <label>Deterministic strength</label>
           <input name="strength" type="number" min="0" max="1" step="0.05" value="0.30" />
         </div>
         <div>
-          <label>Anchor Mode (drift control)</label>
+          <label>Anchor mode</label>
           <select name="anchor_mode">
             <option value="single" selected>single (recommended)</option>
             <option value="dual">dual (old mode)</option>
           </select>
         </div>
         <div>
-          <label>AI Quality</label>
+          <label>AI quality</label>
           <select name="ai_quality">
             <option value="standard" selected>standard (recommended)</option>
-            <option value="high">high (stronger, more drift risk)</option>
+            <option value="high">high (stronger)</option>
           </select>
         </div>
         <div>
-          <label>Max Canvas</label>
+          <label>Max canvas</label>
           <select name="max_canvas">
             <option value="1024" selected>1024 (recommended)</option>
-            <option value="1536">1536 (bigger output)</option>
+            <option value="1536">1536</option>
           </select>
         </div>
       </div>
@@ -273,11 +257,11 @@ def home():
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
 
+      const v = res.headers.get("X-APP-VERSION") || "";
       const delta = res.headers.get("X-AI-DELTA") || "";
       const canvas = res.headers.get("X-API-CANVAS") || "";
       const anchor = res.headers.get("X-ANCHOR") || "";
       const q = res.headers.get("X-AI-QUALITY") || "";
-      const v = res.headers.get("X-APP-VERSION") || "";
 
       out.innerHTML = `
         <h3>Result</h3>
@@ -302,8 +286,6 @@ def health():
 async def enhance(
     file: UploadFile = File(...),
     strength: float = Form(0.30),
-
-    # knobs (optional; won't break your existing callers)
     anchor_mode: str = Form("single"),
     ai_quality: str = Form("standard"),
     max_canvas: int = Form(1024),
@@ -326,15 +308,15 @@ async def enhance(
 
         strength = float(_clamp(float(strength), 0.0, 1.0))
 
-        # Deterministic pregrade (global only)
-        det_np = enhance_image(canvas_img, strength=float(strength)).astype(np.uint8)
+        # Deterministic pregrade (global)
+        det_np = enhance_image(canvas_img, strength=strength).astype(np.uint8)
         det_img = Image.fromarray(det_np, mode="RGB")
 
         det_path = _write_temp_png(det_img)
         orig_path = _write_temp_png(canvas_img)
         tmp_paths.extend([det_path, orig_path])
 
-        # AI edit
+        # AI edit (working)
         ai_canvas = _call_ai_edit(
             det_path,
             orig_path,
@@ -343,7 +325,7 @@ async def enhance(
             quality=ai_quality,
         )
 
-        # Debug: quantify how much AI changed pixels on the canvas
+        # Debug: how much AI changed pixels on canvas
         orig_np = np.array(canvas_img, dtype=np.uint8)
         ai_np = np.array(ai_canvas, dtype=np.uint8)
         ai_delta = float(np.mean(np.abs(orig_np.astype(np.int16) - ai_np.astype(np.int16))))
