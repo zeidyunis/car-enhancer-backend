@@ -14,19 +14,21 @@ from openai import OpenAI
 from api.utils.opencv_pipeline import enhance_image
 
 
-app = FastAPI()
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-ALLOWED_ORIGINS = [
-    "https://www.carhancer.com",
-    "https://carhancer.com",
-    "https://id-preview--be57ce02-6783-4807-a967-7ede7043ec97.lovable.app",
-    "https://be57ce02-6783-4807-a967-7ede7043ec97.lovableproject.com",
-]
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,   # ← IMPORTANT change
+    # Explicitly allow your own domains
+    allow_origins=[
+        "https://www.carhancer.com",
+        "https://carhancer.com",
+    ],
+    # Allow ANY Lovable preview/prod domain (lovable.app, lovableproject.com, etc.)
+    allow_origin_regex=r"^https://.*\.lovable(app|project)\.com$|^https://id-preview--.*\.lovable\.app$",
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
