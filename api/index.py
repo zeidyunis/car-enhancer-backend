@@ -16,15 +16,17 @@ from api.utils.opencv_pipeline import enhance_image
 
 app = FastAPI()
 
+ALLOWED_ORIGINS = [
+    "https://www.carhancer.com",
+    "https://carhancer.com",
+    "https://id-preview--be57ce02-6783-4807-a967-7ede7043ec97.lovable.app",
+    "https://be57ce02-6783-4807-a967-7ede7043ec97.lovableproject.com",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://www.carhancer.com",
-        "https://carhancer.com",
-        "https://id-preview--be57ce02-6783-4807-a967-7ede7043ec97.lovable.app",
-        "https://be57ce02-6783-4807-a967-7ede7043ec97.lovableproject.com"
-    ],
-    allow_credentials=True,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,   # ← IMPORTANT change
     allow_methods=["*"],
     allow_headers=["*"],
 )
