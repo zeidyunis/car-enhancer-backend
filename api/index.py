@@ -218,7 +218,7 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/enhance")
+@app.post("/")
 async def enhance(
     file: UploadFile = File(...),
     strength: float = Form(0.35),
