@@ -1,6 +1,7 @@
 import io
 import os
 import base64
+import logging
 import tempfile
 import traceback
 
@@ -13,11 +14,8 @@ from openai import OpenAI
 
 from api.utils.opencv_pipeline import enhance_image
 
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-
 app = FastAPI()
+logger = logging.getLogger("car-enhancer")
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,6 +24,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def _log_registered_routes() -> None:
+    routes = []
+    for route in app.routes:
+        methods = sorted(m for m in (route.methods or set()) if m not in {"HEAD", "OPTIONS"})
+        if methods:
+            routes.append(f"{','.join(methods)} {route.path}")
+    logger.info("Registered routes: %s", " | ".join(sorted(routes)))
 
 PROMPT = """
 Edit (not recreate) this exact photo for a premium car sales listing.
@@ -218,6 +226,7 @@ def health():
     return {"status": "ok"}
 
 
+@app.post("/enhance")
 @app.post("/")
 async def enhance(
     file: UploadFile = File(...),
