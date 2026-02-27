@@ -21,13 +21,12 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    # keep your own domains explicit
     allow_origins=[
         "https://www.carhancer.com",
         "https://carhancer.com",
+        "https://id-preview--be57ce02-6783-4807-a967-7ede7043ec97.lovable.app",
+        "https://be57ce02-6783-4807-a967-7ede7043ec97.lovableproject.com",
     ],
-    # allow ANY Lovable domain formats: *.lovable.app, *.lovableproject.com, *.lovable.app (including id-preview--)
-    allow_origin_regex=r"^https://.*\.lovable\.app$|^https://.*\.lovableproject\.com$",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
