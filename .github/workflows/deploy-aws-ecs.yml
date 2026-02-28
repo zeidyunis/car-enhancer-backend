@@ -3,7 +3,7 @@ name: Deploy to ECS Express
 on:
   push:
     branches:
-      - main
+      - deploy-aws
   workflow_dispatch:
 
 permissions:
