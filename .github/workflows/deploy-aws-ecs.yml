@@ -1,0 +1,69 @@
+name: Deploy to ECS Express
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: eu-central-1
+  ECR_REPOSITORY: car-enhancer-backend
+  ECS_SERVICE_NAME: car-enhancer-backend
+  ECS_EXPRESS_EXECUTION_ROLE_ARN: arn:aws:iam::603819180055:role/ecsTaskExecutionRole
+  ECS_EXPRESS_INFRASTRUCTURE_ROLE_ARN: arn:aws:iam::603819180055:role/ecsInfrastructureRoleForExpressServices
+  GITHUB_ROLE_ARN: arn:aws:iam::603819180055:role/GitHub-car-enhancer-backend
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.GITHUB_ROLE_ARN }}
+          role-session-name: github-actions-ecs-deploy
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+      - name: Deploy to ECS Express service
+        id: deploy
+        uses: aws-actions/amazon-ecs-deploy-express-service@v1
+        with:
+          service-name: ${{ env.ECS_SERVICE_NAME }}
+          image: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          container-port: 8000
+          health-check-path: /health
+          execution-role-arn: ${{ env.ECS_EXPRESS_EXECUTION_ROLE_ARN }}
+          infrastructure-role-arn: ${{ env.ECS_EXPRESS_INFRASTRUCTURE_ROLE_ARN }}
+          secrets: |
+            [
+              {
+                "name": "OPENAI_API_KEY",
+                "valueFrom": "arn:aws:ssm:eu-central-1:603819180055:parameter/car-enhancer-openai-api-key"
+              }
+            ]
+
+      - name: Deployment summary
+        run: |
+          echo "Service ARN: ${{ steps.deploy.outputs.service-arn }}"
+          echo "Endpoint: ${{ steps.deploy.outputs.endpoint }}"
