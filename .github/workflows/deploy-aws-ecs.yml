@@ -17,7 +17,7 @@ env:
   ECS_EXPRESS_EXECUTION_ROLE_ARN: arn:aws:iam::603819180055:role/ecsTaskExecutionRole
   ECS_EXPRESS_INFRASTRUCTURE_ROLE_ARN: arn:aws:iam::603819180055:role/ecsInfrastructureRoleForExpressServices
   GITHUB_ROLE_ARN: arn:aws:iam::603819180055:role/GitHub-car-enhancer-backend
-  OPENAI_API_KEY_SECRET_ARN: arn:aws:secretsmanager:eu-central-1:603819180055:secret:CarEnhancerBackend/OPENAI_API_KEY-XDflhW
+  OPENAI_API_KEY_SECRET_ARN: arn:aws:secretsmanager:eu-central-1:603819180055:secret:gptapi-LZw6r6
 
 jobs:
   deploy:
